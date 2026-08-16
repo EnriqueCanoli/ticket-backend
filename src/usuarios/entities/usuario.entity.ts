@@ -7,6 +7,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { Ticket } from '../../tickets/entities/ticket.entity';
+import { RefreshToken } from '../../auth/entities/refresh-token.entity';
 
 @Entity('usuarios')
 export class Usuario {
@@ -39,4 +40,7 @@ export class Usuario {
 
   @OneToMany(() => Ticket, (ticket) => ticket.usuario)
   tickets: Ticket[];
+
+  @OneToMany(() => RefreshToken, (refreshToken) => refreshToken.usuario)
+  refreshTokens: RefreshToken[];
 }
