@@ -7,6 +7,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { Ticket } from '../../tickets/entities/ticket.entity';
+import { Producto } from '../../productos/entities/producto.entity';
 import { RefreshToken } from '../../auth/entities/refresh-token.entity';
 
 @Entity('usuarios')
@@ -40,6 +41,10 @@ export class Usuario {
 
   @OneToMany(() => Ticket, (ticket) => ticket.usuario)
   tickets: Ticket[];
+
+  /** Catálogo de productos privado de esta cuenta (ver `producto.entity.ts`). */
+  @OneToMany(() => Producto, (producto) => producto.usuario)
+  productos: Producto[];
 
   @OneToMany(() => RefreshToken, (refreshToken) => refreshToken.usuario)
   refreshTokens: RefreshToken[];

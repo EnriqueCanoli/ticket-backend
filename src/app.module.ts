@@ -4,6 +4,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
+import { ProductosModule } from './productos/productos.module';
+import { TicketsModule } from './tickets/tickets.module';
 import { Usuario } from './usuarios/entities/usuario.entity';
 import { Producto } from './productos/entities/producto.entity';
 import { Ticket } from './tickets/entities/ticket.entity';
@@ -32,6 +34,8 @@ import { RefreshToken } from './auth/entities/refresh-token.entity';
       }),
     }),
     AuthModule,
+    ProductosModule,
+    TicketsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

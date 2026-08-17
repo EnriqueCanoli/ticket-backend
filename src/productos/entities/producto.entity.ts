@@ -2,10 +2,13 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  JoinColumn,
+  ManyToOne,
   OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { Usuario } from '../../usuarios/entities/usuario.entity';
 import { numericTransformer } from '../../database/transformers/numeric.transformer';
 import { TicketItem } from '../../tickets/entities/ticket-item.entity';
 
@@ -13,6 +16,18 @@ import { TicketItem } from '../../tickets/entities/ticket-item.entity';
 export class Producto {
   @PrimaryGeneratedColumn('uuid')
   id: string;
+
+  /**
+   * Catálogo privado por cuenta: cada usuario tiene su propio catálogo de
+   * productos, sin mezclarse con el de otras cuentas. Mismo patrón que
+   * `Ticket.usuarioId`/`Ticket.usuario` (ver `ticket.entity.ts`).
+   */
+  @Column({ name: 'usuario_id', type: 'uuid' })
+  usuarioId: string;
+
+  @ManyToOne(() => Usuario, (usuario) => usuario.productos, { nullable: false })
+  @JoinColumn({ name: 'usuario_id' })
+  usuario: Usuario;
 
   @Column({ name: 'nombre', type: 'varchar', length: 150 })
   nombre: string;
