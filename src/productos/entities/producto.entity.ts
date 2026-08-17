@@ -59,6 +59,14 @@ export class Producto {
   @Column({ name: 'costo_validado', type: 'boolean', default: true })
   costoValidado: boolean;
 
+  /**
+   * Soft-delete flag (ENDPOINTS.md §6): `true` = visible en catálogo y
+   * búsquedas; `false` = "borrado" para el cliente, pero la fila persiste
+   * para no violar `ticket_items.producto_id ... ON DELETE RESTRICT`.
+   */
+  @Column({ name: 'activo', type: 'boolean', default: true })
+  activo: boolean;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

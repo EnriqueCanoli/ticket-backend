@@ -9,7 +9,10 @@ export interface ProductoSearchResult {
   precio_venta: number;
 }
 
-/** Shape de `POST /productos` (ENDPOINTS.md sección 3): entidad completa ya creada. */
+/**
+ * Shape de `POST /productos` y `PATCH /productos/:id`
+ * (features/productos/ENDPOINTS.md secciones 3 y 4): entidad completa.
+ */
 export interface ProductoResponse {
   id: string;
   nombre: string;
@@ -18,4 +21,23 @@ export interface ProductoResponse {
   costo_validado: boolean;
   created_at: Date;
   updated_at: Date;
+}
+
+/**
+ * Shape de cada elemento de `GET /productos/catalogo`
+ * (features/productos/ENDPOINTS.md sección 2): todos los campos que necesita
+ * la tabla de `ProductosScreen.tsx`, sin timestamps.
+ */
+export interface ProductoCatalogoItem {
+  id: string;
+  nombre: string;
+  costo: number;
+  precio_venta: number;
+  costo_validado: boolean;
+}
+
+/** Shape de `DELETE /productos/:id` (features/productos/ENDPOINTS.md sección 5). */
+export interface ProductoDeleteResponse {
+  id: string;
+  activo: boolean;
 }
