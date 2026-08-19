@@ -13,7 +13,8 @@ export class RegisterDto {
   email: string;
 
   @Matches(/^(?=.*\d).{6,}$/, {
-    message: 'password must be at least 6 characters long and contain at least 1 number',
+    message:
+      'password must be at least 6 characters long and contain at least 1 number',
   })
   password: string;
 

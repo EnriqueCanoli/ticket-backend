@@ -12,7 +12,10 @@ import { ReportesService } from './reportes.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { Usuario } from '../usuarios/entities/usuario.entity';
-import type { ReporteDiaItem, ReporteMesItem } from './interfaces/reporte-response.interface';
+import type {
+  ReporteDiaItem,
+  ReporteMesItem,
+} from './interfaces/reporte-response.interface';
 
 const MES_MIN = 1;
 const MES_MAX = 12;
@@ -57,11 +60,14 @@ export class ReportesController {
   @UseGuards(JwtAuthGuard)
   getMes(
     @Query('mes', ParseIntPipe) mes: number,
-    @Query('anio', new ParseIntPipe({ optional: true })) anio: number | undefined,
+    @Query('anio', new ParseIntPipe({ optional: true }))
+    anio: number | undefined,
     @CurrentUser() usuario: Usuario,
   ): Promise<ReporteMesItem[]> {
     if (mes < MES_MIN || mes > MES_MAX) {
-      throw new BadRequestException(`mes must be between ${MES_MIN} and ${MES_MAX}`);
+      throw new BadRequestException(
+        `mes must be between ${MES_MIN} and ${MES_MAX}`,
+      );
     }
     if (anio !== undefined && anio < 1) {
       throw new BadRequestException('anio must be a positive integer');

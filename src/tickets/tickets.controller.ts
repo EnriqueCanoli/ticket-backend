@@ -1,4 +1,11 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  HttpStatus,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { TicketsService } from './tickets.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -14,7 +21,10 @@ export class TicketsController {
   @Post('tickets')
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(JwtAuthGuard)
-  create(@Body() dto: CreateTicketDto, @CurrentUser() usuario: Usuario): Promise<TicketResponse> {
+  create(
+    @Body() dto: CreateTicketDto,
+    @CurrentUser() usuario: Usuario,
+  ): Promise<TicketResponse> {
     return this.ticketsService.create(dto, usuario.id);
   }
 }

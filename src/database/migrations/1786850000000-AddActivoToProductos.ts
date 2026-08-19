@@ -24,7 +24,9 @@ export class AddActivoToProductos1786850000000 implements MigrationInterface {
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_productos_usuario_id_activo";`);
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "IDX_productos_usuario_id_activo";`,
+    );
     await queryRunner.query(`
       ALTER TABLE "productos" DROP COLUMN IF EXISTS "activo";
     `);

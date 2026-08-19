@@ -2,7 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TicketItem } from '../tickets/entities/ticket-item.entity';
-import { ReporteDiaItem, ReporteMesItem } from './interfaces/reporte-response.interface';
+import {
+  ReporteDiaItem,
+  ReporteMesItem,
+} from './interfaces/reporte-response.interface';
 
 /**
  * Shape crudo devuelto por `getRawMany()` para `GET /reportes/dia`. Todas las
@@ -82,9 +85,14 @@ export class ReportesService {
    * servidor" que `getDia` ya usa con `CURRENT_DATE` (§5.9). El rango del mes
    * se arma con `make_date(...)` sobre ese año resuelto.
    */
-  async getMes(usuarioId: string, mes: number, anio: number | undefined): Promise<ReporteMesItem[]> {
+  async getMes(
+    usuarioId: string,
+    mes: number,
+    anio: number | undefined,
+  ): Promise<ReporteMesItem[]> {
     const rangoParams = { anio: anio ?? null, mes };
-    const anioExpr = 'COALESCE(:anio::int, EXTRACT(YEAR FROM CURRENT_DATE)::int)';
+    const anioExpr =
+      'COALESCE(:anio::int, EXTRACT(YEAR FROM CURRENT_DATE)::int)';
 
     const rows = await this.ticketItemRepository
       .createQueryBuilder('ti')
@@ -94,10 +102,16 @@ export class ReportesService {
       .addSelect('p.nombre', 'nombre_producto')
       .addSelect('SUM(ti.cantidad)', 'cantidad')
       .addSelect('SUM(ti.subtotal)', 'venta')
-      .addSelect('SUM(ti.subtotal - ti.cantidad * ti.costoUnitario)', 'ganancia')
+      .addSelect(
+        'SUM(ti.subtotal - ti.cantidad * ti.costoUnitario)',
+        'ganancia',
+      )
       .where('t.usuarioId = :usuarioId', { usuarioId })
       .andWhere(`t.createdAt >= make_date(${anioExpr}, :mes, 1)`, rangoParams)
-      .andWhere(`t.createdAt < make_date(${anioExpr}, :mes, 1) + interval '1 month'`, rangoParams)
+      .andWhere(
+        `t.createdAt < make_date(${anioExpr}, :mes, 1) + interval '1 month'`,
+        rangoParams,
+      )
       .groupBy('p.id')
       .addGroupBy('p.nombre')
       .orderBy('p.nombre', 'ASC')

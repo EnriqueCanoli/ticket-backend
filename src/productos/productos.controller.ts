@@ -56,14 +56,19 @@ export class ProductosController {
   @Get('productos/catalogo')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
-  findCatalogo(@CurrentUser() usuario: Usuario): Promise<ProductoCatalogoItem[]> {
+  findCatalogo(
+    @CurrentUser() usuario: Usuario,
+  ): Promise<ProductoCatalogoItem[]> {
     return this.productosService.findCatalogo(usuario.id);
   }
 
   @Post('productos')
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(JwtAuthGuard)
-  create(@Body() dto: CreateProductoDto, @CurrentUser() usuario: Usuario): Promise<ProductoResponse> {
+  create(
+    @Body() dto: CreateProductoDto,
+    @CurrentUser() usuario: Usuario,
+  ): Promise<ProductoResponse> {
     return this.productosService.create(dto, usuario.id);
   }
 

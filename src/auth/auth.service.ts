@@ -1,4 +1,8 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { JwtService } from '@nestjs/jwt';
@@ -11,7 +15,12 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
-import { AuthResponse, MeResponse, TokenPairResponse, UserResponse } from './interfaces/auth-response.interface';
+import {
+  AuthResponse,
+  MeResponse,
+  TokenPairResponse,
+  UserResponse,
+} from './interfaces/auth-response.interface';
 
 /** Rondas de salt para bcryptjs (password y pin). */
 const SALT_ROUNDS = 10;
@@ -38,12 +47,20 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
   ) {
-    this.accessTokenTtlSeconds = parseInt(this.configService.get<string>('ACCESS_TOKEN_TTL', '900'), 10);
-    this.refreshTokenTtlSeconds = parseInt(this.configService.get<string>('REFRESH_TOKEN_TTL', '2592000'), 10);
+    this.accessTokenTtlSeconds = parseInt(
+      this.configService.get<string>('ACCESS_TOKEN_TTL', '900'),
+      10,
+    );
+    this.refreshTokenTtlSeconds = parseInt(
+      this.configService.get<string>('REFRESH_TOKEN_TTL', '2592000'),
+      10,
+    );
   }
 
   async register(dto: RegisterDto): Promise<AuthResponse> {
-    const existing = await this.usuarioRepository.findOne({ where: { email: dto.email } });
+    const existing = await this.usuarioRepository.findOne({
+      where: { email: dto.email },
+    });
     if (existing) {
       throw new ConflictException('El email ya está registrado');
     }
@@ -60,7 +77,8 @@ export class AuthService {
     });
     await this.usuarioRepository.save(usuario);
 
-    const { refreshTokenEntity: _refreshTokenEntity, ...tokens } = await this.issueTokenPair(usuario);
+    const { refreshTokenEntity: _refreshTokenEntity, ...tokens } =
+      await this.issueTokenPair(usuario);
 
     return {
       user: this.toUserResponse(usuario),
@@ -69,7 +87,9 @@ export class AuthService {
   }
 
   async login(dto: LoginDto): Promise<AuthResponse> {
-    const usuario = await this.usuarioRepository.findOne({ where: { email: dto.email } });
+    const usuario = await this.usuarioRepository.findOne({
+      where: { email: dto.email },
+    });
 
     // Mismo error genérico tanto si el email no existe como si el password no
     // coincide, para no filtrar por enumeración qué correos están registrados
@@ -78,7 +98,10 @@ export class AuthService {
       throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
 
-    const passwordMatches = await bcrypt.compare(dto.password, usuario.passwordHash);
+    const passwordMatches = await bcrypt.compare(
+      dto.password,
+      usuario.passwordHash,
+    );
     if (!passwordMatches) {
       throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
@@ -117,7 +140,8 @@ export class AuthService {
     }
 
     const usuario = existingToken.usuario;
-    const { refreshTokenEntity, ...tokens } = await this.issueTokenPair(usuario);
+    const { refreshTokenEntity, ...tokens } =
+      await this.issueTokenPair(usuario);
 
     existingToken.revokedAt = new Date();
     existingToken.replacedById = refreshTokenEntity.id;

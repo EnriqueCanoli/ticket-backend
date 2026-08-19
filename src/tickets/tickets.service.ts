@@ -5,7 +5,10 @@ import { Producto } from '../productos/entities/producto.entity';
 import { Ticket } from './entities/ticket.entity';
 import { TicketItem } from './entities/ticket-item.entity';
 import { CreateTicketDto } from './dto/create-ticket.dto';
-import { TicketItemResponse, TicketResponse } from './interfaces/ticket-response.interface';
+import {
+  TicketItemResponse,
+  TicketResponse,
+} from './interfaces/ticket-response.interface';
 
 @Injectable()
 export class TicketsService {
@@ -31,14 +34,19 @@ export class TicketsService {
    * 4. `total = SUM(subtotal)`.
    * 5. Inserta `ticket` + `ticket_items` en una única transacción.
    */
-  async create(dto: CreateTicketDto, usuarioId: string): Promise<TicketResponse> {
+  async create(
+    dto: CreateTicketDto,
+    usuarioId: string,
+  ): Promise<TicketResponse> {
     const productoIds = dto.items.map((item) => item.producto_id);
     const uniqueProductoIds = [...new Set(productoIds)];
 
     const productos = await this.productoRepository.find({
       where: { id: In(uniqueProductoIds), usuarioId },
     });
-    const productoById = new Map(productos.map((producto) => [producto.id, producto]));
+    const productoById = new Map(
+      productos.map((producto) => [producto.id, producto]),
+    );
 
     const missingIds = uniqueProductoIds.filter((id) => !productoById.has(id));
     if (missingIds.length > 0) {

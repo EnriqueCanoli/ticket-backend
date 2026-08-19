@@ -1,4 +1,12 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -6,7 +14,11 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { Usuario } from '../usuarios/entities/usuario.entity';
-import type { AuthResponse, MeResponse, TokenPairResponse } from './interfaces/auth-response.interface';
+import type {
+  AuthResponse,
+  MeResponse,
+  TokenPairResponse,
+} from './interfaces/auth-response.interface';
 
 /**
  * Rutas y códigos HTTP tal como AUTH_ENDPOINTS.md sección 3: `/auth/register`

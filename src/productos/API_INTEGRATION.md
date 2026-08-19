@@ -343,21 +343,39 @@ Edición parcial de un producto existente (`ProductosController.update` → `Pro
 { "nombre": "Alpiste Normal", "costo": 11.00, "precio_venta": 24.00 }
 ```
 
-### Comportamiento del servidor (`productos.service.ts:96-122`)
+### Comportamiento del servidor (`productos.service.ts:109-176`)
 
 1. Valida que al menos un campo venga en el body (ver arriba), si no `400`.
 2. Busca el producto por `id` **y** `usuarioId` (del JWT) **y** `activo = true`
-   (`productos.service.ts:101-103`). Si no aparece ninguna fila, `404` con
+   (`productos.service.ts:124-126`). Si no aparece ninguna fila, `404` con
    `NotFoundException('Producto not found')` — **mismo error genérico** para las tres causas
    posibles: el `id` no existe, existe pero es de otro usuario, o existe pero ya está
    `activo = false` (soft-borrado). El cliente no puede distinguir cuál ocurrió a partir de la
    respuesta — a propósito, para no filtrar entre cuentas si un producto ajeno existe o no.
 3. Aplica únicamente los campos presentes en el body; los ausentes conservan su valor actual.
 4. **`costo_validado` se fuerza siempre a `true`** (`producto.costoValidado = true;`,
-   `productos.service.ts:117`), sin importar qué campos vinieron en el body — incluso si el
+   `productos.service.ts:146`), sin importar qué campos vinieron en el body — incluso si el
    cliente solo mandó `nombre` sin tocar `costo`.
 5. `save()` persiste los cambios; `updated_at` se refresca automáticamente
    (`@UpdateDateColumn`).
+6. **Efecto secundario silencioso — corrección retroactiva del histórico en la primera
+   confirmación de costo** (`productos.service.ts:148-173`): si el producto tenía
+   `costo_validado: false` **antes** de este `PATCH` (es decir, este es el primer `PATCH` que lo
+   marca como `costo_validado: true`) y el valor de `costo` efectivamente cambió respecto al que
+   tenía guardado, el servidor actualiza además, en la **misma transacción**
+   (`dataSource.transaction`), todas las filas de `ticket_items` cuyo `producto_id` sea este
+   producto y cuyo `costo_unitario` sea igual al costo viejo — dejándolas con el costo recién
+   confirmado. Esto corrige la ganancia mostrada por ventas ya registradas mientras el producto
+   tenía el costo placeholder (`costo: 1`, ver §3) sin costo real todavía. **No se modifica**
+   `precio_venta_unitario`, `subtotal` de `ticket_items`, ni `total` de `tickets` — el precio de
+   venta siempre fue el real, lo único corregido es el costo histórico. Si el producto **ya**
+   tenía `costo_validado: true` (una edición de costo posterior a la primera confirmación), el
+   histórico **no se toca**: ese cambio aplica solo hacia adelante, y las ventas ya registradas
+   conservan su `costo_unitario` original como snapshot. Este efecto es completamente silencioso
+   para el cliente: la respuesta de este endpoint no cambia (mismo `ProductoResponse`, sin campos
+   nuevos) sea que la corrección haya ocurrido o no — el único efecto observable es que
+   `GET /reportes/dia` y `GET /reportes/mes` (`reportes/API_INTEGRATION.md`) empiezan a devolver la
+   ganancia corregida para las ventas pasadas de ese producto la próxima vez que se consulten.
 
 ### Response — éxito `200 OK`
 

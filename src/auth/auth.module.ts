@@ -22,7 +22,10 @@ import { JwtStrategy } from './strategies/jwt.strategy';
         // forma explícita si JWT_SECRET no está definido.
         secret: configService.getOrThrow<string>('JWT_SECRET'),
         signOptions: {
-          expiresIn: parseInt(configService.get<string>('ACCESS_TOKEN_TTL', '900'), 10),
+          expiresIn: parseInt(
+            configService.get<string>('ACCESS_TOKEN_TTL', '900'),
+            10,
+          ),
         },
       }),
     }),
