@@ -123,6 +123,7 @@ serializa la entidad completa.
 |---|---|
 | `400` | Falla alguna regla de `RegisterDto` (email inválido, password sin dígito o < 6 chars, phone ≠ 10 dígitos, campo faltante) **o** el body trae un campo no declarado en el DTO (`forbidNonWhitelisted`) |
 | `409` | `auth.service.ts:46-49` — ya existe un `Usuario` con ese `email` exacto (`ConflictException('El email ya está registrado')`). Nota: la búsqueda es `findOne({ where: { email: dto.email } })`, sin `LOWER()` ni normalización — es sensible a mayúsculas/minúsculas tal como esté guardado el email existente. |
+| `429` | Rate-limiting por IP (`@nestjs/throttler`, `ThrottlerGuard`): más de 5 requests en 60 segundos desde la misma IP a `/auth/register` (`@Throttle({ default: { limit: 5, ttl: 60000 } })` en `auth.controller.ts`). Formato estándar de excepción de Nest, `message` como string: `{"statusCode":429,"message":"ThrottlerException: Too Many Requests"}`. |
 
 ---
 
@@ -170,7 +171,8 @@ Mismo shape `AuthResponse` que `/auth/register` (`auth.service.ts:71-92`):
 | Código | Condición exacta en el código |
 |---|---|
 | `400` | Falla alguna regla de `LoginDto`, o campo extra no declarado |
-| `401` | **Dos causas distintas, mismo mensaje genérico** `"Credenciales inválidas"` (`INVALID_CREDENTIALS_MESSAGE`, `auth.service.ts:20`): (a) no existe `Usuario` con ese `email` (`auth.service.ts:77-79`), o (b) existe pero `bcrypt.compare(dto.password, usuario.passwordHash)` devuelve `false` (`auth.service.ts:81-84`). El cliente **no puede distinguir** ambos casos a partir de la respuesta — es intencional (evita enumeración de emails registrados). |
+| `401` | **Dos causas distintas, mismo mensaje genérico** `"Credenciales inválidas"` (`INVALID_CREDENTIALS_MESSAGE`, `auth.service.ts:20`): (a) no existe `Usuario` con ese `email` (`auth.service.ts:77-79`), o (b) existe pero `bcrypt.compare(dto.password, usuario.passwordHash)` devuelve `false` (`auth.service.ts:81-84`). El cliente **no puede distinguir** ambos casos a partir de la respuesta — es intencional (evita enumeración de emails registrados). Además, `bcrypt.compare` se ejecuta **siempre** (contra un hash señuelo si el email no existe), para que el tiempo de respuesta tampoco delate cuál de los dos casos ocurrió. |
+| `429` | Rate-limiting por IP (`@nestjs/throttler`, `ThrottlerGuard`): más de 5 requests en 60 segundos desde la misma IP a `/auth/login` (`@Throttle({ default: { limit: 5, ttl: 60000 } })` en `auth.controller.ts`). Formato estándar de excepción de Nest, `message` como string: `{"statusCode":429,"message":"ThrottlerException: Too Many Requests"}`. |
 
 ---
 

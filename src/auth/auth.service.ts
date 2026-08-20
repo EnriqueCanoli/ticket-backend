@@ -26,6 +26,20 @@ import {
 /** Rondas de salt para bcryptjs (password). */
 const SALT_ROUNDS = 10;
 
+/**
+ * Hash bcrypt "señuelo" contra el que se compara cuando el email no existe, para
+ * pagar siempre el mismo costo de bcrypt.compare (~10 rondas) sin importar si la
+ * cuenta existe. Sin esto, un email inexistente respondía en milisegundos mientras
+ * uno real pagaba el costo completo de bcrypt — un oráculo de temporización que
+ * permitía enumerar cuentas registradas aunque el mensaje de error fuera idéntico
+ * en ambos casos. Cualquier hash válido sirve: el password que mande el cliente
+ * nunca podrá coincidir con la cadena fija usada para generarlo.
+ */
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync(
+  'dummy-password-para-igualar-tiempos',
+  SALT_ROUNDS,
+);
+
 /** Mensaje genérico para no revelar si el email existe o si fue el password lo que falló. */
 const INVALID_CREDENTIALS_MESSAGE = 'Credenciales inválidas';
 
@@ -91,18 +105,14 @@ export class AuthService {
       where: { email: dto.email },
     });
 
-    // Mismo error genérico tanto si el email no existe como si el password no
-    // coincide, para no filtrar por enumeración qué correos están registrados
-    // (AUTH_ENDPOINTS.md sección 3, ambigüedad punto 3).
-    if (!usuario) {
-      throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
-    }
-
+    // Mismo error genérico Y mismo costo de bcrypt tanto si el email no existe
+    // como si el password no coincide, para no filtrar por temporización qué
+    // correos están registrados (AUTH_ENDPOINTS.md sección 3, ambigüedad punto 3).
     const passwordMatches = await bcrypt.compare(
       dto.password,
-      usuario.passwordHash,
+      usuario?.passwordHash ?? DUMMY_PASSWORD_HASH,
     );
-    if (!passwordMatches) {
+    if (!usuario || !passwordMatches) {
       throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
 
