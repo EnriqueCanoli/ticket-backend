@@ -23,3 +23,8 @@ export interface TokenPairResponse {
 export interface AuthResponse extends TokenPairResponse {
   user: UserResponse;
 }
+
+/** Shape de GET /me/pin: el PIN de desbloqueo del usuario autenticado. */
+export interface PinResponse {
+  pin: string;
+}

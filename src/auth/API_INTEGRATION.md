@@ -19,7 +19,8 @@
 3. [POST /auth/login](#3-post-authlogin)
 4. [POST /auth/refresh](#4-post-authrefresh)
 5. [GET /me](#5-get-me)
-6. [Diferencias vs. diseño original](#diferencias-vs-diseño-original)
+6. [GET /me/pin](#6-get-mepin)
+7. [Diferencias vs. diseño original](#diferencias-vs-diseño-original)
 
 ---
 
@@ -113,7 +114,7 @@ Shape exacto (`AuthResponse`, `interfaces/auth-response.interface.ts`), construi
 ```
 
 Nota: `user` **no** incluye `updated_at` (solo lo incluye `GET /me`) ni, por supuesto,
-`password_hash`/`pin_hash` — `toUserResponse()` es un mapper explícito campo por campo, nunca
+`password_hash`/`pin` — `toUserResponse()` es un mapper explícito campo por campo, nunca
 serializa la entidad completa.
 
 ### Errores
@@ -247,8 +248,44 @@ Shape `MeResponse` (`toMeResponse()`, `auth.service.ts:138-143`) — es `UserRes
 }
 ```
 
-`password_hash` y `pin_hash` nunca se incluyen (mismo mapper explícito `toUserResponse()`, con
+`password_hash` y `pin` nunca se incluyen (mismo mapper explícito `toUserResponse()`, con
 `updated_at` agregado aparte).
+
+### Errores
+
+| Código | Condición exacta en el código |
+|---|---|
+| `401` | Header `Authorization` ausente o no tiene el esquema `Bearer <token>` — comportamiento **default** de `passport-jwt`/`AuthGuard`, no hay lógica custom. Body: `{"statusCode":401,"message":"Unauthorized","error":"Unauthorized"}` |
+| `401` | Token con firma inválida o mal formado — mismo default de Passport, mismo body genérico `"Unauthorized"` |
+| `401` | Token expirado (`ignoreExpiration: false` en `jwt.strategy.ts:17`) — mismo default de Passport |
+| `401` | Token válido pero el `sub` (id de usuario) ya no existe en `usuarios` — `JwtStrategy.validate()` captura el error de `validateUserById` y relanza `new UnauthorizedException()` sin mensaje custom (`jwt.strategy.ts:25-32`), así que el body también es el genérico `"Unauthorized"` (no `"Credenciales inválidas"` como en `/auth/login`) |
+
+---
+
+## 6. GET /me/pin
+
+Devuelve el PIN de desbloqueo del usuario autenticado, resuelto siempre a partir del JWT (nunca
+de un parámetro de la request).
+
+**Headers**: requerido `Authorization: Bearer <access_token>`. Sin body.
+
+Protegido por `JwtAuthGuard`/`JwtStrategy`, exactamente igual que `GET /me` (ver sección 5): el
+usuario del payload (`sub`) se resuelve vía `AuthService.validateUserById(payload.sub)`, que ya
+trae la entidad `Usuario` completa (incluida la columna `pin`), así que `toPinResponse()` no
+dispara ninguna consulta adicional a la base de datos.
+
+### Response — éxito `200 OK`
+
+Shape `PinResponse` (`toPinResponse()`, `auth.service.ts`):
+
+```json
+{
+  "pin": "0427"
+}
+```
+
+`pin` es siempre un string de 4 dígitos, con ceros a la izquierda preservados (el PIN se guarda
+como `varchar(4)`, no como número).
 
 ### Errores
 
@@ -287,13 +324,11 @@ rotación de refresh token con detección de reuso). Las diferencias puntuales e
 3. **Generación automática de PIN en `/auth/register`, no contemplada en el diseño.**
    `AUTH_ENDPOINTS.md` declara explícitamente la verificación de PIN "fuera de alcance" (sección
    6: "endpoint separado, no es parte de este flujo"). Sin embargo, el código sí genera un PIN de
-   4 dígitos en cada registro (`generatePin()`, `auth.service.ts:52,157-161`) y lo guarda
-   hasheado en `usuarios.pin_hash`. **El PIN en texto plano nunca se devuelve en la respuesta de
-   `/auth/register`** (`toUserResponse()` no lo incluye) — no hay, dentro de estos 4 endpoints,
-   ninguna forma de que el cliente sepa qué PIN se generó. Si el flujo de `PinGate.tsx` (mencionado
-   como fuera de alcance en el diseño) depende de que el usuario conozca este PIN, va a necesitar
-   un mecanismo adicional (otro endpoint, envío por SMS/email, etc.) que no existe en el código
-   actual de `auth/`.
+   4 dígitos en cada registro (`generatePin()`, `auth.service.ts`). Ese PIN se guarda en texto
+   plano en `usuarios.pin` (decisión explícita de producto: por ahora no se hashea). **El PIN
+   nunca se devuelve en la respuesta de `/auth/register`, `/auth/login` ni `GET /me`**
+   (`toUserResponse()`/`toMeResponse()` no lo incluyen) — el cliente lo obtiene mediante el
+   endpoint dedicado [`GET /me/pin`](#6-get-mepin).
 
 4. **Mensaje de error `401` distinto entre `/auth/login` y `GET /me`.** El diseño usaba
    `"Credenciales inválidas"` como ejemplo genérico de error `401` sin distinguir endpoints. En el
@@ -308,13 +343,13 @@ rotación de refresh token con detección de reuso). Las diferencias puntuales e
    (no encontrado, revocado, expirado) — dato nuevo, no una discrepancia, pero útil para que el
    cliente no dependa de un texto distinto.
 
-6. **Detalle interno menor**: el hash de password/PIN se hace con la librería `bcryptjs` (JS puro)
+6. **Detalle interno menor**: el hash de password se hace con la librería `bcryptjs` (JS puro)
    en vez de `bcrypt` (binario nativo) que mencionaba el diseño como opción. No afecta el
    contrato de la API (mismo algoritmo, mismo formato de hash), es solo una nota de
    implementación.
 
 No se encontraron diferencias en: rutas y métodos HTTP, códigos de éxito (201/200/200/200), shape
 de `user` y de los tokens, reglas de `password`/`phone`, TTLs y sus nombres de env var, exclusión
-de `password_hash`/`pin_hash` de todas las respuestas, ausencia de `confirmPassword` en el
-request, auto-login en `/auth/register`, y la lógica de rotación + detección de reuso en
-`/auth/refresh`.
+de `password_hash` de todas las respuestas y de `pin` de `/auth/register`, `/auth/login` y
+`GET /me` (solo `GET /me/pin` lo devuelve), ausencia de `confirmPassword` en el request,
+auto-login en `/auth/register`, y la lógica de rotación + detección de reuso en `/auth/refresh`.

@@ -25,13 +25,12 @@ export class Usuario {
   phone: string;
 
   /**
-   * PIN de 4 dígitos hasheado, 1 a 1 con la cuenta. Deliberadamente sin
+   * PIN de 4 dígitos en texto plano, 1 a 1 con la cuenta. Deliberadamente sin
    * `unique`: ver README sección 5 (dos cuentas pueden compartir el mismo
-   * PIN numérico en claro sin que eso rompa nada, el hash con salt nunca
-   * coincidiría igual entre cuentas distintas).
+   * PIN numérico sin que eso rompa nada).
    */
-  @Column({ name: 'pin_hash', type: 'varchar', length: 255 })
-  pinHash: string;
+  @Column({ name: 'pin', type: 'varchar', length: 4 })
+  pin: string;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

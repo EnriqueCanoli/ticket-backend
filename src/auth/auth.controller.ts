@@ -17,6 +17,7 @@ import type { Usuario } from '../usuarios/entities/usuario.entity';
 import type {
   AuthResponse,
   MeResponse,
+  PinResponse,
   TokenPairResponse,
 } from './interfaces/auth-response.interface';
 
@@ -52,5 +53,12 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   me(@CurrentUser() usuario: Usuario): MeResponse {
     return this.authService.toMeResponse(usuario);
+  }
+
+  @Get('me/pin')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  mePin(@CurrentUser() usuario: Usuario): PinResponse {
+    return this.authService.toPinResponse(usuario);
   }
 }

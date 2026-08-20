@@ -18,11 +18,12 @@ import { JwtPayload } from './interfaces/jwt-payload.interface';
 import {
   AuthResponse,
   MeResponse,
+  PinResponse,
   TokenPairResponse,
   UserResponse,
 } from './interfaces/auth-response.interface';
 
-/** Rondas de salt para bcryptjs (password y pin). */
+/** Rondas de salt para bcryptjs (password). */
 const SALT_ROUNDS = 10;
 
 /** Mensaje genérico para no revelar si el email existe o si fue el password lo que falló. */
@@ -67,13 +68,12 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
     const pin = this.generatePin();
-    const pinHash = await bcrypt.hash(pin, SALT_ROUNDS);
 
     const usuario = this.usuarioRepository.create({
       email: dto.email,
       passwordHash,
       phone: dto.phone,
-      pinHash,
+      pin,
     });
     await this.usuarioRepository.save(usuario);
 
@@ -166,9 +166,13 @@ export class AuthService {
     };
   }
 
+  toPinResponse(usuario: Usuario): PinResponse {
+    return { pin: usuario.pin };
+  }
+
   private toUserResponse(usuario: Usuario): UserResponse {
     // Mapper explícito: nunca se confía en la serialización automática de la
-    // entidad completa, para no exponer `passwordHash`/`pinHash` (sección 3 y
+    // entidad completa, para no exponer `passwordHash`/`pin` (sección 3 y
     // 5.7 del doc).
     return {
       id: usuario.id,
