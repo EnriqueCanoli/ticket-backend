@@ -15,7 +15,14 @@ export class Usuario {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ name: 'email', type: 'varchar', length: 255, unique: true })
+  /**
+   * Sin `unique` aquí: la unicidad real la garantiza el índice funcional
+   * `UQ_usuarios_email_lower` sobre `LOWER(email)` (ver migración
+   * NormalizeUsuariosEmail), no este decorador — el proyecto usa
+   * `synchronize: false`, así que TypeORM nunca sincroniza constraints desde
+   * las entidades.
+   */
+  @Column({ name: 'email', type: 'varchar', length: 255 })
   email: string;
 
   @Column({ name: 'password_hash', type: 'varchar', length: 255 })

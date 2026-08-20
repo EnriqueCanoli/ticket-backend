@@ -73,8 +73,16 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto): Promise<AuthResponse> {
+    // Normalizado acá (no en el DTO): el ValidationPipe global no usa
+    // `transform: true`, así que un @Transform() en el DTO no llegaría a
+    // aplicarse sobre el objeto que recibe este método (mismo motivo por el
+    // que ProductosService.search() hace `search.trim()` acá y no en su DTO).
+    // Sin esto, "Juan@gmail.com" y "juan@gmail.com" se tratarían como cuentas
+    // distintas.
+    const email = dto.email.trim().toLowerCase();
+
     const existing = await this.usuarioRepository.findOne({
-      where: { email: dto.email },
+      where: { email },
     });
     if (existing) {
       throw new ConflictException('El email ya está registrado');
@@ -84,7 +92,7 @@ export class AuthService {
     const pin = this.generatePin();
 
     const usuario = this.usuarioRepository.create({
-      email: dto.email,
+      email,
       passwordHash,
       phone: dto.phone,
       pin,
@@ -101,8 +109,12 @@ export class AuthService {
   }
 
   async login(dto: LoginDto): Promise<AuthResponse> {
+    // Mismo motivo que register(): normalizado acá porque el DTO no pasa por
+    // transform (ver comentario de register()).
+    const email = dto.email.trim().toLowerCase();
+
     const usuario = await this.usuarioRepository.findOne({
-      where: { email: dto.email },
+      where: { email },
     });
 
     // Mismo error genérico Y mismo costo de bcrypt tanto si el email no existe
