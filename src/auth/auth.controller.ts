@@ -31,7 +31,20 @@ import type {
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  // Límite dedicado y más estricto que el resto de la API (hallazgo de
+  // seguridad H8): a diferencia de /auth/login (que no revela si un email
+  // existe), /auth/register sí lo hace por diseño — 409 confirma la cuenta,
+  // 201 la descarta. El registro legítimo de una cuenta es además un evento
+  // raro por IP (a diferencia del login, que un mismo usuario repite todo el
+  // tiempo), así que puede tolerar un límite mucho más bajo sin afectar el
+  // uso normal.
+  //
+  // Esto MITIGA el hueco de enumeración (hace impráctico enumerar una lista
+  // completa de correos del negocio) pero no lo elimina: la única forma de
+  // cerrarlo del todo es no revelar nada de inmediato y confirmar la cuenta
+  // por correo electrónico, lo cual requiere infraestructura de email que
+  // este proyecto no tiene hoy — decisión de producto, fuera de alcance.
+  @Throttle({ default: { limit: 3, ttl: 1800000 } })
   @Post('auth/register')
   @HttpCode(HttpStatus.CREATED)
   register(@Body() dto: RegisterDto): Promise<AuthResponse> {

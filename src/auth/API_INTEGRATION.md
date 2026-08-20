@@ -123,7 +123,7 @@ serializa la entidad completa.
 |---|---|
 | `400` | Falla alguna regla de `RegisterDto` (email inválido, password sin dígito o < 6 chars, phone ≠ 10 dígitos, campo faltante) **o** el body trae un campo no declarado en el DTO (`forbidNonWhitelisted`) |
 | `409` | `auth.service.ts:46-49` — ya existe un `Usuario` con ese `email` exacto (`ConflictException('El email ya está registrado')`). Nota: la búsqueda es `findOne({ where: { email: dto.email } })`, sin `LOWER()` ni normalización — es sensible a mayúsculas/minúsculas tal como esté guardado el email existente. |
-| `429` | Rate-limiting por IP (`@nestjs/throttler`, `ThrottlerGuard`): más de 5 requests en 60 segundos desde la misma IP a `/auth/register` (`@Throttle({ default: { limit: 5, ttl: 60000 } })` en `auth.controller.ts`). Formato estándar de excepción de Nest, `message` como string: `{"statusCode":429,"message":"ThrottlerException: Too Many Requests"}`. |
+| `429` | Rate-limiting por IP (`@nestjs/throttler`, `ThrottlerGuard`): más de 3 requests en 30 minutos desde la misma IP a `/auth/register` (`@Throttle({ default: { limit: 3, ttl: 1800000 } })` en `auth.controller.ts`). Límite dedicado, más estricto que el resto de la API (`/auth/login` sigue en 5/60s) — mitigación deliberada del hallazgo H8: a diferencia de `/auth/login`, `/auth/register` sí revela por diseño si un email existe (409 vs. 201), así que se frena la enumeración masiva de correos con un límite bajo por IP. No elimina el hueco (solo confirmación por correo lo haría), es una mitigación. Formato estándar de excepción de Nest, `message` como string: `{"statusCode":429,"message":"ThrottlerException: Too Many Requests"}`. |
 
 ---
 
