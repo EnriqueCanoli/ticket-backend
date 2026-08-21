@@ -28,7 +28,16 @@ export class Usuario {
   @Column({ name: 'password_hash', type: 'varchar', length: 255 })
   passwordHash: string;
 
-  @Column({ name: 'phone', type: 'varchar', length: 10 })
+  /**
+   * A diferencia de `email` (unicidad vía índice funcional sobre
+   * `LOWER(email)`, que este decorador no puede expresar), `phone` se mapea
+   * 1 a 1 con un `UNIQUE` simple sobre la columna tal cual
+   * (`UQ_usuarios_phone`, ver migración AddUniquePhoneToUsuarios), así que el
+   * decorador sí documenta correctamente la restricción real. Con
+   * `synchronize: false` esto es documentación, no la fuente de la
+   * restricción — la crea la migración.
+   */
+  @Column({ name: 'phone', type: 'varchar', length: 10, unique: true })
   phone: string;
 
   /**
