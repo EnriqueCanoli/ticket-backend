@@ -6,7 +6,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { JwtService } from '@nestjs/jwt';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, QueryFailedError, Repository } from 'typeorm';
 import { randomBytes, createHash, randomInt } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
 import { Usuario } from '../usuarios/entities/usuario.entity';
@@ -45,6 +45,28 @@ const INVALID_CREDENTIALS_MESSAGE = 'Credenciales inválidas';
 
 /** Mensaje genérico para cualquier refresh token inválido/expirado/revocado/reusado. */
 const INVALID_REFRESH_TOKEN_MESSAGE = 'Refresh token inválido';
+
+/** SQLSTATE de Postgres para `unique_violation`. */
+const POSTGRES_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Nombre del índice único funcional sobre LOWER(email) creado por la
+ * migración NormalizeUsuariosEmail1786870000000. Postgres lo reporta tanto
+ * en el campo `constraint` del error como dentro del texto del mensaje.
+ */
+const EMAIL_UNIQUE_INDEX = 'UQ_usuarios_email_lower';
+
+/**
+ * Forma real del error del driver `pg` que TypeORM adjunta como
+ * `QueryFailedError.driverError` (y además copia como propiedades propias
+ * sobre la instancia). `QueryFailedError<T extends Error = Error>` sólo
+ * declara `query`, `parameters` y `driverError`, así que `code` y
+ * `constraint` hay que tipearlos acá para no usar `any`.
+ */
+type PostgresDriverError = Error & {
+  code?: string;
+  constraint?: string;
+};
 
 @Injectable()
 export class AuthService {
@@ -97,7 +119,37 @@ export class AuthService {
       phone: dto.phone,
       pin,
     });
-    await this.usuarioRepository.save(usuario);
+    try {
+      await this.usuarioRepository.save(usuario);
+    } catch (error) {
+      // Carrera check-then-act: entre el findOne() de arriba y este save(),
+      // otra request concurrente pudo insertar el mismo email. El findOne no
+      // la veía (esa fila todavía no estaba guardada) y es Postgres quien
+      // rechaza la inserción con el índice único UQ_usuarios_email_lower.
+      // Sin este catch, el QueryFailedError sale sin manejar y Nest responde
+      // 500 {"statusCode":500,"message":"Internal server error"} en vez del
+      // 409 documentado — aunque la otra request sí haya creado la cuenta.
+      if (error instanceof QueryFailedError) {
+        const driverError = error.driverError as PostgresDriverError;
+        if (driverError.code === POSTGRES_UNIQUE_VIOLATION) {
+          // `constraint` es la señal estructurada (pg la llena con el campo
+          // `n` del ErrorResponse de Postgres). El fallback sobre el texto
+          // cubre el caso raro de que ese campo no venga: el mensaje crudo
+          // siempre trae el nombre entre comillas ('duplicate key value
+          // violates unique constraint "UQ_usuarios_email_lower"').
+          if (
+            driverError.constraint === EMAIL_UNIQUE_INDEX ||
+            error.message.includes(EMAIL_UNIQUE_INDEX)
+          ) {
+            throw new ConflictException('El email ya está registrado');
+          }
+          // Restricción única desconocida (ej. UQ_usuarios_phone, u otra
+          // futura): mejor un 409 genérico que un 500 sin clasificar.
+          throw new ConflictException('El registro ya existe');
+        }
+      }
+      throw error;
+    }
 
     const { refreshTokenEntity: _refreshTokenEntity, ...tokens } =
       await this.issueTokenPair(usuario);
