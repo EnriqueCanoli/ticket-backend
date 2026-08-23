@@ -27,6 +27,18 @@ const SEARCH_RESULT_LIMIT = 20;
 const DEFAULT_COSTO = 1;
 const DEFAULT_COSTO_VALIDADO = false;
 
+/**
+ * Postgres usa `\` como carácter de escape por defecto de LIKE/ILIKE, y el
+ * `ILike` de TypeORM@1.1.0 arma la condición como `columna ILIKE $1` sin
+ * cláusula `ESCAPE` propia (ver query-builder), así que hereda ese default.
+ * Se escapa primero `\` (para no reinterpretar un `\` literal del término
+ * como inicio de una secuencia de escape) y luego `%`/`_`, los comodines de
+ * LIKE, para que el término se busque como substring literal.
+ */
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
 @Injectable()
 export class ProductosService {
   constructor(
@@ -48,7 +60,7 @@ export class ProductosService {
     search: string,
     usuarioId: string,
   ): Promise<ProductoSearchResult[]> {
-    const term = search.trim();
+    const term = escapeLikePattern(search.trim());
 
     const productos = await this.productoRepository.find({
       where: { nombre: ILike(`%${term}%`), usuarioId, activo: true },

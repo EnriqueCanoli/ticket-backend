@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsString,
   Matches,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -31,9 +32,10 @@ export class CreateProductoDto {
   @MaxLength(150)
   nombre: string;
 
-  /** `numeric(10,2)` en BD (README §3.2): hasta 2 decimales, `>= 0`. */
+  /** `numeric(10,2)` en BD (README §3.2): hasta 2 decimales, `>= 0`. `@Max` evita el overflow de Postgres (`numeric field overflow`, 500) para valores con más de 8 dígitos enteros. */
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
+  @Max(99999999.99)
   precio_venta: number;
 
   /**
@@ -45,5 +47,6 @@ export class CreateProductoDto {
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
+  @Max(99999999.99)
   costo?: number;
 }

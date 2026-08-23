@@ -1,4 +1,4 @@
-import { IsNumber, IsPositive, IsUUID } from 'class-validator';
+import { IsNumber, IsPositive, IsUUID, Max } from 'class-validator';
 
 /**
  * Item anidado de `POST /tickets` (ENDPOINTS.md sección 4).
@@ -17,9 +17,11 @@ export class CreateTicketItemDto {
    * `numeric(10,3)` en BD (README §3.4): hasta 3 decimales. `@IsPositive()`
    * exige estrictamente `> 0` (no hay piso de `0.1`: ese mínimo es solo una
    * conveniencia de UI en `handleCantidadBlur`, no una regla de negocio —
-   * ver ENDPOINTS.md sección 4).
+   * ver ENDPOINTS.md sección 4). `@Max` evita el overflow de Postgres
+   * (`numeric field overflow`, 500) para valores con más de 7 dígitos enteros.
    */
   @IsNumber({ maxDecimalPlaces: 3 })
   @IsPositive()
+  @Max(9999999.999)
   cantidad: number;
 }
