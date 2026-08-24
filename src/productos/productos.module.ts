@@ -9,7 +9,8 @@ import { ProductosController } from './productos.controller';
   imports: [
     // TicketItem se registra porque `ProductosService.update` corrige
     // retroactivamente `ticket_items.costo_unitario` en la primera confirmación
-    // de costo (vía el EntityManager de la transacción).
+    // de costo (vía el EntityManager de la transacción), y `ProductosService.remove`
+    // lo usa (vía Repository inyectado) para saber si un producto ya fue vendido.
     TypeOrmModule.forFeature([Producto, TicketItem]),
   ],
   controllers: [ProductosController],

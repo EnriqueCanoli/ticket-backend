@@ -447,6 +447,21 @@ DELETE /productos/:id
 2. `producto.activo = false;` y `save()` — actualiza también `updated_at` automáticamente. No hay
    `DELETE FROM productos` en ningún punto del código: la fila persiste (por el
    `ON DELETE RESTRICT` de `ticket_items.producto_id` y para no perder histórico de ventas).
+3. **Efecto secundario silencioso — confirmación automática de costo al eliminar un producto no
+   validado ya vendido**: si el producto tenía `costo_validado: false` (nunca se confirmó su
+   costo real, sigue en el placeholder `costo: 1` del alta rápida, ver [§3](#3-post-productos)) **y**
+   existe al menos un `ticket_items` con `producto_id` igual al de este producto (es decir, ya se
+   vendió alguna vez), el servidor marca `costo_validado = true` como parte de este mismo
+   `DELETE` — el `costo` en sí **no** cambia, sigue en `1`. Motivo: una vez eliminado, el producto
+   desaparece del catálogo y `PATCH /productos/:id` sobre su `id` responde `404` (mismo filtro
+   `activo = true`), así que sin este ajuste ya no habría ninguna forma de confirmar su costo, y la
+   leyenda de "costo sin confirmar" de `GET /reportes/dia`/`GET /reportes/mes`
+   (`reportes/API_INTEGRATION.md`) quedaría apareciendo para siempre en las ventas ya registradas
+   de ese producto. Si el producto ya tenía `costo_validado: true`, o si tenía `costo_validado:
+   false` pero nunca se vendió (no tiene ningún `ticket_items` asociado, así que tampoco aparece en
+   ningún reporte), este `DELETE` no toca `costo_validado` — se comporta exactamente igual que
+   antes de esta regla. Este efecto es completamente silencioso para el cliente: la respuesta de
+   este endpoint no cambia (sigue siendo `{id, activo}`, sin campos nuevos).
 
 ### Response — éxito `200 OK`
 

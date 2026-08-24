@@ -72,6 +72,10 @@ export class ProductosService {
     private readonly dataSource: DataSource,
     @InjectRepository(Producto)
     private readonly productoRepository: Repository<Producto>,
+    // Ya registrado en ProductosModule (usado hoy solo dentro de la transacción de
+    // `update()`); se reutiliza acá para el `existsBy` de `remove()`.
+    @InjectRepository(TicketItem)
+    private readonly ticketItemRepository: Repository<TicketItem>,
   ) {}
 
   /**
@@ -230,7 +234,8 @@ export class ProductosService {
    * soft-delete (`activo = false`), nunca `DELETE FROM`, por el
    * `ON DELETE RESTRICT` de `ticket_items.producto_id`. Mismo criterio de
    * búsqueda que `update` — doble-delete sobre uno ya inactivo es `404`
-   * (§8.7).
+   * (§8.7). Además, si el producto tenía `costo_validado = false` y ya fue
+   * vendido, confirma automáticamente el costo (ver comentario más abajo).
    */
   async remove(id: string, usuarioId: string): Promise<ProductoDeleteResponse> {
     const producto = await this.productoRepository.findOne({
@@ -241,6 +246,25 @@ export class ProductosService {
     }
 
     producto.activo = false;
+
+    // Un producto con costo_validado=false que ya se vendió pierde, con este
+    // soft-delete, la única vía para confirmar su costo: desaparece del catálogo
+    // (`findCatalogo`/`search` filtran `activo=true`) y `update()` ya no lo
+    // encuentra (mismo filtro), así que un PATCH posterior responde 404. Sin este
+    // ajuste, la leyenda de "costo sin confirmar" quedaría en los reportes de sus
+    // ventas pasadas para siempre, sin ninguna forma de resolverla. Decisión de
+    // negocio: ya que nadie podrá corregirlo, se acepta el placeholder ($1) como
+    // costo definitivo — el `costo` no se toca, solo se marca como validado. Si
+    // nunca se vendió, no aparece en ningún reporte y no hace falta tocar nada.
+    if (!producto.costoValidado) {
+      const yaFueVendido = await this.ticketItemRepository.existsBy({
+        productoId: producto.id,
+      });
+      if (yaFueVendido) {
+        producto.costoValidado = true;
+      }
+    }
+
     await this.productoRepository.save(producto);
 
     return { id: producto.id, activo: producto.activo };

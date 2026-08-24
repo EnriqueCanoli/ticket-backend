@@ -76,6 +76,10 @@
   TypeORM): el comportamiento depende de la config de sesión/SO del servidor de base de datos.
 - **`GET /reportes/dia` y `GET /reportes/mes` nunca lanzan `404`**: ambos responden `200 OK` con
   `[]` cuando no hay filas que cumplan el filtro (usuario sin ventas ese día/mes) — no es un error.
+- **`costo_validado` en ambos endpoints**: viene del `innerJoin` contra `productos` que ya existía
+  para `nombre_producto`, y refleja el estado **actual** de `productos.costo_validado`, no un
+  snapshot tomado al momento de la venta — ver el detalle y el porqué en [§2](#2-get-reportesdia) y
+  [§3](#3-get-reportesmes).
 - **`reportes.module.ts` registra `Ticket`, `TicketItem` y `Producto`** en `TypeOrmModule.forFeature`,
   aunque `ReportesService` solo inyecta el repositorio de `TicketItem`: recorre las otras dos tablas
   vía relaciones del `QueryBuilder` (`ti.ticket`, `ti.producto`), no con repositorios propios — nota
@@ -129,12 +133,22 @@ Array de `ReporteDiaItem` (`interfaces/reporte-response.interface.ts`), construi
     "cantidad": 2,
     "venta": 46,
     "costo": 20,
-    "hora": "08:05"
+    "hora": "08:05",
+    "costo_validado": true
   }
 ]
 ```
 
 Si el usuario no tiene ventas hoy: `200 OK` con `[]` (no es un error).
+
+**`costo_validado`**: viene del mismo `innerJoin('ti.producto', 'p')` ya usado para `nombre_producto`
+(`.addSelect('p.costoValidado', 'costo_validado')`, `reportes.service.ts`) — es el valor **actual**
+de `productos.costo_validado` para el producto de esa línea, no un snapshot congelado al momento de
+la venta. Por eso una línea de una venta ya registrada puede pasar de `false` a `true` entre dos
+llamadas a este endpoint, sin que la venta se haya vuelto a tocar: basta con que el producto se
+valide después (`PATCH /productos/:id` con `costo`) — mismo momento en el que, si el costo cambió,
+se dispara la corrección retroactiva de `ticket_items.costo_unitario` ya documentada en
+`productos/API_INTEGRATION.md` (punto 6 de la sección `PATCH /productos/:id`).
 
 ### Errores
 
@@ -266,12 +280,20 @@ Array de `ReporteMesItem` (`interfaces/reporte-response.interface.ts`), construi
 
 ```json
 [
-  { "producto_id": "uuid-1", "nombre_producto": "Alpiste Normal", "cantidad": 27, "venta": 612, "ganancia": 268 },
-  { "producto_id": "uuid-2", "nombre_producto": "Perron Adulto Bulto", "cantidad": 6, "venta": 3282, "ganancia": 762 }
+  { "producto_id": "uuid-1", "nombre_producto": "Alpiste Normal", "cantidad": 27, "venta": 612, "ganancia": 268, "costo_validado": false },
+  { "producto_id": "uuid-2", "nombre_producto": "Perron Adulto Bulto", "cantidad": 6, "venta": 3282, "ganancia": 762, "costo_validado": true }
 ]
 ```
 
 Si el usuario no tuvo ventas ese mes/año: `200 OK` con `[]` (no es un error).
+
+**`costo_validado`**: mismo campo y mismo mecanismo que en [§2](#2-get-reportesdia) — viene del
+`innerJoin('ti.producto', 'p')` (`.addSelect('p.costoValidado', 'costo_validado')`, agregado también
+a `GROUP BY` junto con `p.nombre` porque `getMes` agrupa). Como cada fila de `getMes` ya está
+agrupada por `producto_id` (un solo producto por fila, sin mezclar productos distintos), el campo es
+simplemente el estado **actual** de `costo_validado` de ese producto — refleja el mismo cambio
+retroactivo (`false` → `true`) que puede ocurrir entre dos llamadas si el producto se valida en el
+medio, sin que las ventas de ese mes se hayan vuelto a tocar.
 
 ### Errores
 

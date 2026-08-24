@@ -13,6 +13,8 @@ export interface ReporteDiaItem {
   venta: number;
   costo: number;
   hora: string;
+  /** `false` si el producto de esta línea tiene `productos.costo_validado = false` actualmente. */
+  costo_validado: boolean;
 }
 
 /**
@@ -26,4 +28,6 @@ export interface ReporteMesItem {
   cantidad: number;
   venta: number;
   ganancia: number;
+  /** `false` si el producto de esta fila tiene `productos.costo_validado = false` actualmente. */
+  costo_validado: boolean;
 }

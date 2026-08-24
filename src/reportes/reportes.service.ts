@@ -20,6 +20,7 @@ interface RawReporteDiaRow {
   venta: string;
   costo: string;
   hora: string;
+  costo_validado: boolean;
 }
 
 /** Shape crudo devuelto por `getRawMany()` para `GET /reportes/mes` (mismo motivo). */
@@ -29,6 +30,7 @@ interface RawReporteMesRow {
   cantidad: string;
   venta: string;
   ganancia: string;
+  costo_validado: boolean;
 }
 
 @Injectable()
@@ -61,6 +63,7 @@ export class ReportesService {
       .addSelect('ti.subtotal', 'venta')
       .addSelect('ti.cantidad * ti.costoUnitario', 'costo')
       .addSelect("TO_CHAR(t.createdAt, 'HH24:MI')", 'hora')
+      .addSelect('p.costoValidado', 'costo_validado')
       .where('t.usuarioId = :usuarioId', { usuarioId })
       .andWhere('t.createdAt >= CURRENT_DATE')
       .andWhere("t.createdAt < CURRENT_DATE + interval '1 day'")
@@ -106,6 +109,7 @@ export class ReportesService {
         'SUM(ti.subtotal - ti.cantidad * ti.costoUnitario)',
         'ganancia',
       )
+      .addSelect('p.costoValidado', 'costo_validado')
       .where('t.usuarioId = :usuarioId', { usuarioId })
       .andWhere(`t.createdAt >= make_date(${anioExpr}, :mes, 1)`, rangoParams)
       .andWhere(
@@ -114,6 +118,7 @@ export class ReportesService {
       )
       .groupBy('p.id')
       .addGroupBy('p.nombre')
+      .addGroupBy('p.costoValidado')
       .orderBy('p.nombre', 'ASC')
       .getRawMany<RawReporteMesRow>();
 
@@ -130,6 +135,9 @@ export class ReportesService {
       venta: Number(row.venta),
       costo: Number(row.costo),
       hora: row.hora,
+      // `boolean` de Postgres llega ya nativo vía el driver `pg` (a diferencia de `numeric`),
+      // así que no pasa por Number(...) ni ninguna conversión.
+      costo_validado: row.costo_validado,
     };
   }
 
@@ -140,6 +148,7 @@ export class ReportesService {
       cantidad: Number(row.cantidad),
       venta: Number(row.venta),
       ganancia: Number(row.ganancia),
+      costo_validado: row.costo_validado,
     };
   }
 }
