@@ -1,10 +1,11 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, ILike, Repository } from 'typeorm';
+import { DataSource, ILike, QueryFailedError, Repository } from 'typeorm';
 import { Producto } from './entities/producto.entity';
 import { TicketItem } from '../tickets/entities/ticket-item.entity';
 import { CreateProductoDto } from './dto/create-producto.dto';
@@ -26,6 +27,31 @@ const SEARCH_RESULT_LIMIT = 20;
  */
 const DEFAULT_COSTO = 1;
 const DEFAULT_COSTO_VALIDADO = false;
+
+/** SQLSTATE de Postgres para `unique_violation`. */
+const POSTGRES_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Nombre del índice único funcional sobre (usuario_id, LOWER(nombre)) creado
+ * por la migración AddUniqueNombreToProductos1787589148636. Postgres lo
+ * reporta tanto en el campo `constraint` del error como dentro del texto del
+ * mensaje.
+ */
+const NOMBRE_UNIQUE_INDEX = 'UQ_productos_usuario_id_nombre_lower';
+
+/**
+ * Forma real del error del driver `pg` que TypeORM adjunta como
+ * `QueryFailedError.driverError` (y además copia como propiedades propias
+ * sobre la instancia). `QueryFailedError<T extends Error = Error>` sólo
+ * declara `query`, `parameters` y `driverError`, así que `code` y
+ * `constraint` hay que tipearlos acá para no usar `any`. Mismo tipo que
+ * `AuthService` define localmente para el mismo propósito — no hay ningún
+ * helper de errores compartido en el proyecto.
+ */
+type PostgresDriverError = Error & {
+  code?: string;
+  constraint?: string;
+};
 
 /**
  * Postgres usa `\` como carácter de escape por defecto de LIKE/ILIKE, y el
@@ -92,7 +118,11 @@ export class ProductosService {
       costoValidado: costoValidado ? true : DEFAULT_COSTO_VALIDADO,
       usuarioId,
     });
-    await this.productoRepository.save(producto);
+    try {
+      await this.productoRepository.save(producto);
+    } catch (error) {
+      this.rethrowIfNombreDuplicado(error);
+    }
 
     return this.toResponse(producto);
   }
@@ -168,21 +198,29 @@ export class ProductosService {
       costoValidadoAnterior === false && producto.costo !== costoAnterior;
 
     if (!debeCorregirHistorial) {
-      await this.productoRepository.save(producto);
+      try {
+        await this.productoRepository.save(producto);
+      } catch (error) {
+        this.rethrowIfNombreDuplicado(error);
+      }
       return this.toResponse(producto);
     }
 
     const costoConfirmado = producto.costo;
-    await this.dataSource.transaction(async (manager) => {
-      await manager.save(producto);
-      // Solo `costo_unitario`: `precio_venta_unitario`, `subtotal` y `tickets.total`
-      // siempre fueron correctos (el alta rápida sí captura precio_venta).
-      await manager.update(
-        TicketItem,
-        { productoId: producto.id, costoUnitario: costoAnterior },
-        { costoUnitario: costoConfirmado },
-      );
-    });
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        await manager.save(producto);
+        // Solo `costo_unitario`: `precio_venta_unitario`, `subtotal` y `tickets.total`
+        // siempre fueron correctos (el alta rápida sí captura precio_venta).
+        await manager.update(
+          TicketItem,
+          { productoId: producto.id, costoUnitario: costoAnterior },
+          { costoUnitario: costoConfirmado },
+        );
+      });
+    } catch (error) {
+      this.rethrowIfNombreDuplicado(error);
+    }
 
     return this.toResponse(producto);
   }
@@ -206,6 +244,31 @@ export class ProductosService {
     await this.productoRepository.save(producto);
 
     return { id: producto.id, activo: producto.activo };
+  }
+
+  /**
+   * Carrera check-then-act en `update()`: entre el `findOne()` de arriba y el
+   * `save()`, otra request concurrente pudo renombrar/crear un producto del
+   * mismo usuario al mismo nombre. `create()` no tiene siquiera ese
+   * `findOne()` previo — nunca hubo chequeo de duplicado antes de este fix —
+   * así que acá este `catch` es la única protección real, no solo una red de
+   * seguridad para la carrera. Sin él, el `QueryFailedError` sale sin
+   * manejar y Nest responde `500` en vez del `409` esperado.
+   */
+  private rethrowIfNombreDuplicado(error: unknown): never {
+    if (error instanceof QueryFailedError) {
+      const driverError = error.driverError as PostgresDriverError;
+      if (driverError.code === POSTGRES_UNIQUE_VIOLATION) {
+        if (
+          driverError.constraint === NOMBRE_UNIQUE_INDEX ||
+          error.message.includes(NOMBRE_UNIQUE_INDEX)
+        ) {
+          throw new ConflictException('Ya existe un producto con ese nombre');
+        }
+        throw new ConflictException('El registro ya existe');
+      }
+    }
+    throw error;
   }
 
   private toSearchResult(producto: Producto): ProductoSearchResult {

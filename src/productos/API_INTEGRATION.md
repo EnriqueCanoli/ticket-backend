@@ -217,8 +217,15 @@ si no:
 - `producto.activo` no se setea explícitamente en `create()`: queda en `true` por el `default`
   de columna (`producto.entity.ts:67`, ver [§1](#1-convenciones-generales)) — todo producto nace
   activo.
-- No hay validación de nombre duplicado: `ProductosService.create` no consulta si ya existe un
-  producto con el mismo `nombre` antes de insertar.
+- **Nombre duplicado (por cuenta) rechazado a nivel de base de datos**: `productos` tiene un
+  índice único parcial `UQ_productos_usuario_id_nombre_lower` sobre
+  `(usuario_id, LOWER(nombre)) WHERE activo = true`
+  (`database/migrations/1787589148636-AddUniqueNombreToProductos.ts`). `ProductosService.create`
+  no hace ningún `findOne()` previo de chequeo — el `try/catch` alrededor del `save()` es la única
+  protección real, no una red de seguridad para una carrera. Al violar el índice, Postgres
+  responde `23505` (`unique_violation`) y el servicio lo traduce a `409 ConflictException('Ya
+  existe un producto con ese nombre')` (ver tabla de errores abajo). Al ser parcial y filtrado por
+  `activo = true`, un producto soft-eliminado no bloquea crear uno nuevo con el mismo nombre.
 
 ### Response — éxito `201 Created`
 
@@ -246,6 +253,7 @@ endpoint que devuelve `activo` es `DELETE /productos/:id`, ver [§6](#6-delete-p
 |---|---|
 | `400` | `nombre` ausente, vacío/solo-espacios, o `> 150` caracteres; `precio_venta` ausente, no numérico, negativo, o con más de 2 decimales; `costo` presente pero no numérico, negativo, o con más de 2 decimales; o algún campo extra no declarado (`costo_validado`, `activo`, `usuario_id`, `id`, `created_at`, `updated_at`, etc.) por `forbidNonWhitelisted` |
 | `401` | Mismo comportamiento que en `GET /productos` (ver arriba) |
+| `409` | Ya existe un producto **activo** del mismo usuario con el mismo `nombre` normalizado (`LOWER(nombre)`, sin remoción de acentos) — violación del índice único `UQ_productos_usuario_id_nombre_lower`. `message` string simple: `"Ya existe un producto con ese nombre"`. |
 
 ---
 
@@ -357,7 +365,11 @@ Edición parcial de un producto existente (`ProductosController.update` → `Pro
    `productos.service.ts:146`), sin importar qué campos vinieron en el body — incluso si el
    cliente solo mandó `nombre` sin tocar `costo`.
 5. `save()` persiste los cambios; `updated_at` se refresca automáticamente
-   (`@UpdateDateColumn`).
+   (`@UpdateDateColumn`). Si el `nombre` (nuevo o sin cambios) coincide, normalizado, con el de
+   otro producto **activo** del mismo usuario, Postgres rechaza el `UPDATE` por el mismo índice
+   único `UQ_productos_usuario_id_nombre_lower` descrito en [§3](#3-post-productos), y el servicio
+   responde `409 ConflictException('Ya existe un producto con ese nombre')` — mismo mecanismo que
+   `POST`, sin `findOne()` de chequeo previo, solo el `catch` alrededor del `save()`/la transacción.
 6. **Efecto secundario silencioso — corrección retroactiva del histórico en la primera
    confirmación de costo** (`productos.service.ts:148-173`): si el producto tenía
    `costo_validado: false` **antes** de este `PATCH` (es decir, este es el primer `PATCH` que lo
@@ -402,6 +414,7 @@ Mismo shape `ProductoResponse` que `POST /productos`, ya con `costo_validado: tr
 | `400` | `nombre` presente pero vacío/solo-espacios/`> 150` chars; `costo`/`precio_venta` presentes pero negativos/no numéricos/`> 2` decimales; o campo extra no declarado (`message` arreglo, `class-validator`) |
 | `401` | No autenticado — mismo comportamiento que en `GET /productos` |
 | `404` | `id` no existe, o existe pero pertenece a otro usuario, o existe pero `activo = false` — **mismo body genérico** `{"statusCode":404,"message":"Producto not found","error":"Not Found"}` para las tres causas, intencionalmente, para no revelar cuál ocurrió |
+| `409` | El `nombre` (nuevo o existente) coincide, normalizado, con el de otro producto **activo** del mismo usuario — mismo índice único que en `POST` (ver [§3](#3-post-productos)). `message` string simple: `"Ya existe un producto con ese nombre"`. |
 
 ---
 
