@@ -34,6 +34,13 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * va a fallar. Proyecto en desarrollo, sin datos de producción que
  * preservar: si eso pasa, la recomendación es resetear la base de datos de
  * prueba, no escribir lógica de merge de productos.
+ *
+ * Superseded by AddUnaccentToProductosNombreIndex1787591323516: al
+ * unificarse `normalizarNombre()` del cliente para que también ignore
+ * acentos, el razonamiento de "LOWER() sin unaccent ya es coherente" de
+ * arriba quedó obsoleto. Esa migración posterior reemplaza el índice creado
+ * aquí (mismo nombre) por uno equivalente que además ignora acentos; esta
+ * migración se deja intacta porque ya corrió.
  */
 export class AddUniqueNombreToProductos1787589148636 implements MigrationInterface {
   name = 'AddUniqueNombreToProductos1787589148636';
