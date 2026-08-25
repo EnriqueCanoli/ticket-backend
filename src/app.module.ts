@@ -43,6 +43,10 @@ import { RefreshToken } from './auth/entities/refresh-token.entity';
         entities: [Usuario, Producto, Ticket, TicketItem, RefreshToken],
         synchronize: false,
         uuidExtension: 'pgcrypto',
+        ssl:
+          configService.get<string>('DB_SSL') === 'true'
+            ? { rejectUnauthorized: false }
+            : false,
       }),
     }),
     AuthModule,

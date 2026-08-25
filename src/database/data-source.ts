@@ -33,6 +33,7 @@ export const dataSourceOptions: DataSourceOptions = {
   // sin esto, el driver de Postgres de TypeORM asume uuid-ossp/
   // uuid_generate_v4() por defecto.
   uuidExtension: 'pgcrypto',
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
 };
 
 const dataSource = new DataSource(dataSourceOptions);
