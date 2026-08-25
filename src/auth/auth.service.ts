@@ -118,6 +118,7 @@ export class AuthService {
       passwordHash,
       phone: dto.phone,
       pin,
+      aceptoTerminos: dto.aceptoTerminos,
     });
     try {
       await this.usuarioRepository.save(usuario);

@@ -1,4 +1,4 @@
-import { IsEmail, Matches } from 'class-validator';
+import { Equals, IsBoolean, IsEmail, Matches } from 'class-validator';
 import { MaxBcryptBytes } from '../validators/max-bcrypt-bytes.validator';
 
 /**
@@ -9,6 +9,13 @@ import { MaxBcryptBytes } from '../validators/max-bcrypt-bytes.validator';
  * - phone: exactamente 10 dígitos, sin espacios/formato.
  *
  * `confirmPassword` no viaja al backend (ver sección 5, punto 1 del doc).
+ *
+ * `aceptoTerminos`: no basta con validarlo en el cliente — el patrón de este
+ * repo (ver auditorías previas) es no confiar solo en la validación del
+ * cliente. `@Equals(true)` rechaza con 400 tanto el `false` explícito como
+ * cualquier valor que no sea literalmente `true`; `@IsBoolean()` cubre el
+ * caso de que falte o venga con otro tipo (sin `transform: true` en el
+ * ValidationPipe global, un `undefined` llega tal cual al validador).
  */
 export class RegisterDto {
   @IsEmail()
@@ -25,4 +32,11 @@ export class RegisterDto {
     message: 'phone must be exactly 10 digits',
   })
   phone: string;
+
+  @IsBoolean()
+  @Equals(true, {
+    message:
+      'debes aceptar los Términos y Condiciones y la Política de Privacidad',
+  })
+  aceptoTerminos: boolean;
 }

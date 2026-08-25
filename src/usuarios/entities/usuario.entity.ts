@@ -48,6 +48,14 @@ export class Usuario {
   @Column({ name: 'pin', type: 'varchar', length: 4 })
   pin: string;
 
+  /**
+   * Booleano simple: aceptó o no aceptó los Términos y Condiciones /
+   * Política de Privacidad en el registro. Sin versión de texto ni fecha de
+   * aceptación (decisión de producto, ver migración AddAceptoTerminosToUsuarios).
+   */
+  @Column({ name: 'acepto_terminos', type: 'boolean' })
+  aceptoTerminos: boolean;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

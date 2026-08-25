@@ -79,17 +79,21 @@ Crea una cuenta nueva y devuelve la sesión ya autenticada (auto-login).
 | `email` | `string` | `@IsEmail()` — formato de email válido. **No hay `@Transform` de trim**: si el valor trae espacios al inicio/fin, la validación puede fallar en vez de limpiarse automáticamente (ver [diferencias](#diferencias-vs-diseño-original)). |
 | `password` | `string` | `@Matches(/^(?=.*\d).{6,}$/)` — mínimo 6 caracteres **y** al menos 1 dígito. Mensaje: `"password must be at least 6 characters long and contain at least 1 number"` |
 | `phone` | `string` | `@Matches(/^\d{10}$/)` — exactamente 10 dígitos, sin espacios ni formato. Mensaje: `"phone must be exactly 10 digits"` |
+| `aceptoTerminos` | `boolean` | `@IsBoolean()` + `@Equals(true)` — debe ser literalmente `true`. Cualquier otro valor (`false`, ausente, string, número) hace fallar la request con `400`. Mensaje: `"debes aceptar los Términos y Condiciones y la Política de Privacidad"` |
 
 - `confirmPassword` **no debe enviarse**: al no estar declarado en `RegisterDto` y estar activo
   `forbidNonWhitelisted`, cualquier campo extra (incluido este) hace fallar la request con `400`.
 - No hay campo de PIN en el request. El backend genera un PIN internamente — ver
   [diferencias, punto 3](#diferencias-vs-diseño-original).
+- `aceptoTerminos` se persiste tal cual en `usuarios.acepto_terminos` (booleano simple, sin
+  versión de texto ni fecha de aceptación — ver migración `AddAceptoTerminosToUsuarios`).
 
 ```json
 {
   "email": "user@example.com",
   "password": "abc123",
-  "phone": "5512345678"
+  "phone": "5512345678",
+  "aceptoTerminos": true
 }
 ```
 
@@ -121,7 +125,7 @@ serializa la entidad completa.
 
 | Código | Condición exacta en el código |
 |---|---|
-| `400` | Falla alguna regla de `RegisterDto` (email inválido, password sin dígito o < 6 chars, phone ≠ 10 dígitos, campo faltante) **o** el body trae un campo no declarado en el DTO (`forbidNonWhitelisted`) |
+| `400` | Falla alguna regla de `RegisterDto` (email inválido, password sin dígito o < 6 chars, phone ≠ 10 dígitos, `aceptoTerminos` ausente o distinto de `true`, campo faltante) **o** el body trae un campo no declarado en el DTO (`forbidNonWhitelisted`) |
 | `409` | `auth.service.ts:46-49` — ya existe un `Usuario` con ese `email` exacto (`ConflictException('El email ya está registrado')`). Nota: la búsqueda es `findOne({ where: { email: dto.email } })`, sin `LOWER()` ni normalización — es sensible a mayúsculas/minúsculas tal como esté guardado el email existente. |
 | `429` | Rate-limiting por IP (`@nestjs/throttler`, `ThrottlerGuard`): más de 3 requests en 30 minutos desde la misma IP a `/auth/register` (`@Throttle({ default: { limit: 3, ttl: 1800000 } })` en `auth.controller.ts`). Límite dedicado, más estricto que el resto de la API (`/auth/login` sigue en 5/60s) — mitigación deliberada del hallazgo H8: a diferencia de `/auth/login`, `/auth/register` sí revela por diseño si un email existe (409 vs. 201), así que se frena la enumeración masiva de correos con un límite bajo por IP. No elimina el hueco (solo confirmación por correo lo haría), es una mitigación. Formato estándar de excepción de Nest, `message` como string: `{"statusCode":429,"message":"ThrottlerException: Too Many Requests"}`. |
 
