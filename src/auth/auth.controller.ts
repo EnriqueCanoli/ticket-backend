@@ -64,6 +64,21 @@ export class AuthController {
     return this.authService.refresh(dto);
   }
 
+  // Revoca solo el refresh token de la sesión/dispositivo actual
+  // (AUTH_ENDPOINTS.md sección 7). Requiere el access token vigente
+  // (JwtAuthGuard) para resolver `usuario.id` y verificar que el
+  // refresh_token del body le pertenece — nunca se confía en un
+  // usuario_id del body.
+  @Post('auth/logout')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  logout(
+    @Body() dto: RefreshTokenDto,
+    @CurrentUser() usuario: Usuario,
+  ): Promise<void> {
+    return this.authService.logout(dto, usuario.id);
+  }
+
   @Get('me')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)

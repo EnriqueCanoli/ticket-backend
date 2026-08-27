@@ -181,7 +181,14 @@ export class AuthService {
       throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
 
-    const tokens = await this.issueTokenPair(usuario);
+    // Mismo motivo que register(): descartar refreshTokenEntity antes de
+    // devolver la respuesta. issueTokenPair() lo incluye para que refresh()
+    // pueda usarlo al rotar (existingToken.replacedById = refreshTokenEntity.id),
+    // pero login() no rota nada — sin este destructuring, `...tokens` filtraba
+    // la entidad RefreshToken completa (tokenHash incluido) en el body de
+    // AuthResponse, en vez del shape documentado en AUTH_ENDPOINTS.md sección 3.
+    const { refreshTokenEntity: _refreshTokenEntity, ...tokens } =
+      await this.issueTokenPair(usuario);
 
     return {
       user: this.toUserResponse(usuario),
@@ -223,6 +230,38 @@ export class AuthService {
     await this.refreshTokenRepository.save(existingToken);
 
     return tokens;
+  }
+
+  /**
+   * POST /auth/logout (AUTH_ENDPOINTS.md sección 7). Revoca únicamente el
+   * refresh token de la sesión/dispositivo actual — a diferencia de la
+   * detección de reuso en refresh() (líneas arriba), acá nunca se revoca en
+   * cascada el resto de sesiones activas del usuario:
+   * revokeAllActiveTokensForUser es exclusiva de esa rama, no se reutiliza acá.
+   *
+   * Idempotente y silencioso a propósito: si no se encuentra ningún
+   * RefreshToken cuyo tokenHash + usuarioId coincidan (no existe, pertenece
+   * a otro usuario, o ya estaba revocado), no se lanza ninguna excepción —
+   * el objetivo ("que ese token quede revocado") ya está cumplido en los
+   * tres casos, y no distinguirlos evita filtrar entre cuentas si un token
+   * ajeno existe o no (mismo criterio que el 404 genérico de
+   * ProductosService.update/remove). El filtro por usuarioId (resuelto del
+   * JWT en el controller, nunca del body) es la verificación real de
+   * aislamiento: un usuario no puede revocar un refresh token que no es
+   * suyo aunque lo mande en el body.
+   */
+  async logout(dto: RefreshTokenDto, usuarioId: string): Promise<void> {
+    const tokenHash = this.hashOpaqueToken(dto.refresh_token);
+    const existingToken = await this.refreshTokenRepository.findOne({
+      where: { tokenHash, usuarioId },
+    });
+
+    if (!existingToken || existingToken.revokedAt) {
+      return;
+    }
+
+    existingToken.revokedAt = new Date();
+    await this.refreshTokenRepository.save(existingToken);
   }
 
   /** Usado por JwtStrategy para validar el usuario del payload (`sub`) y adjuntarlo a `request.user`. */

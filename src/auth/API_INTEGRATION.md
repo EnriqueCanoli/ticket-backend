@@ -20,7 +20,8 @@
 4. [POST /auth/refresh](#4-post-authrefresh)
 5. [GET /me](#5-get-me)
 6. [GET /me/pin](#6-get-mepin)
-7. [Diferencias vs. diseño original](#diferencias-vs-diseño-original)
+7. [POST /auth/logout](#7-post-authlogout)
+8. [Diferencias vs. diseño original](#diferencias-vs-diseño-original)
 
 ---
 
@@ -301,6 +302,80 @@ como `varchar(4)`, no como número).
 | `401` | Token con firma inválida o mal formado — mismo default de Passport, mismo body genérico `"Unauthorized"` |
 | `401` | Token expirado (`ignoreExpiration: false` en `jwt.strategy.ts:17`) — mismo default de Passport |
 | `401` | Token válido pero el `sub` (id de usuario) ya no existe en `usuarios` — `JwtStrategy.validate()` captura el error de `validateUserById` y relanza `new UnauthorizedException()` sin mensaje custom (`jwt.strategy.ts:25-32`), así que el body también es el genérico `"Unauthorized"` (no `"Credenciales inválidas"` como en `/auth/login`) |
+
+---
+
+## 7. POST /auth/logout
+
+Revoca el refresh token de la sesión/dispositivo actual. No existe un diseño original previo para
+este endpoint (no está en `c:\dev\ticket\src\features\auth\AUTH_ENDPOINTS.md`): se diseñó
+directamente sobre el código ya implementado (`AuthController.logout`, `AuthService.logout`,
+`auth.controller.ts`/`auth.service.ts`), reutilizando el mecanismo de hash/columna `revoked_at` de
+`refresh_tokens` que ya usan `POST /auth/refresh` y el resto del ciclo de vida del refresh token
+(ver [§4](#4-post-authrefresh)). El propio comentario de `refresh-token.entity.ts:42` anticipaba
+este uso: `NULL = vigente. Con valor = revocado (rotación o, a futuro, logout)`.
+
+**Headers**: **requerido** `Authorization: Bearer <access_token>`, `Content-Type: application/json`.
+Protegido por `JwtAuthGuard`, exactamente igual que `GET /me`/`GET /me/pin` (ver [§5](#5-get-me)):
+el `usuario.id` resuelto del access token es la única fuente de `usuarioId` — nunca se toma de un
+campo del body.
+
+### Request body — `RefreshTokenDto` (reutilizado tal cual de `POST /auth/refresh`, `dto/refresh-token.dto.ts`)
+
+| Campo | Tipo | Validación real (class-validator) |
+|---|---|---|
+| `refresh_token` | `string` | `@IsString()` + `@IsNotEmpty()` — no vacío. Mismo DTO, sin ningún campo nuevo. |
+
+```json
+{
+  "refresh_token": "3f9a...opaque"
+}
+```
+
+### Comportamiento del servidor (`auth.service.ts`, método `logout`)
+
+1. Hashea `refresh_token` con el mismo `hashOpaqueToken()` (SHA-256) que usan `refresh()` e
+   `issueTokenPair()` — no hay un mecanismo de hashing distinto para este endpoint.
+2. Busca un `RefreshToken` cuyo `token_hash` coincida **y** cuyo `usuario_id` sea el del usuario
+   autenticado (`where: { tokenHash, usuarioId }`) — esta es la verificación real de aislamiento
+   entre cuentas: un `refresh_token` sintácticamente válido pero de otro usuario nunca se revoca,
+   se trata exactamente igual que uno inexistente (ver punto 3).
+3. **Idempotente y silencioso, a propósito**: si no aparece ninguna fila (no existe, pertenece a
+   otro usuario, o ya estaba revocado — `revokedAt` no nulo), el método simplemente retorna sin
+   hacer nada y sin lanzar ninguna excepción. El objetivo ("que ese token quede revocado") ya está
+   cumplido en los tres casos, y no distinguirlos evita filtrar entre cuentas si un token ajeno
+   existe o no (mismo criterio que el `404` genérico de `PATCH`/`DELETE /productos/:id`, adaptado
+   acá a "no-op sin error" porque no hace falta ni siquiera un código de error).
+4. Si la fila existe y sigue vigente: se marca `revoked_at = now()` y se guarda. **No** se toca
+   `replaced_by_id` (ese campo es exclusivo de la rotación en `POST /auth/refresh`, un logout
+   normal no emite ningún token nuevo) y **no** se llama a `revokeAllActiveTokensForUser` (esa
+   función es exclusiva de la detección de reuso/robo dentro de `refresh()` — un logout normal
+   revoca únicamente la sesión/dispositivo actual, nunca en cascada el resto de sesiones activas
+   del usuario, por decisión de producto).
+5. No hay transacción explícita: es un único `UPDATE` (vía `save()` de TypeORM) sobre una fila ya
+   leída, mismo patrón que el resto de mutaciones simples de una sola entidad en el proyecto.
+
+### Response — éxito `200 OK`
+
+Cuerpo vacío. `@HttpCode(HttpStatus.OK)` explícito — **no** se usa `204 No Content`, mismo criterio
+ya documentado en `productos/API_INTEGRATION.md` §6 (`DELETE /productos/:id`): ningún endpoint de
+este backend usa `204`. A diferencia de `DELETE /productos/:id` (que sí devuelve `{id, activo}`),
+acá no hay ningún dato útil que devolver más allá del código de éxito, así que el body queda vacío.
+
+### Errores
+
+| Código | Condición exacta en el código |
+|---|---|
+| `400` | `refresh_token` faltante, vacío o no-string (`RefreshTokenDto`), o campo extra no declarado (`forbidNonWhitelisted`) — mismas reglas que `POST /auth/refresh` |
+| `401` | Header `Authorization` ausente, mal formado, token inválido/expirado, o el usuario del token ya no existe — mismo comportamiento default de `JwtAuthGuard`/Passport documentado en [§5](#5-get-me) |
+
+**No hay `401` ni `404` por un `refresh_token` inválido/ajeno/ya revocado en el body**: a diferencia
+de `POST /auth/refresh` (donde un `refresh_token` inválido sí es un `401` explícito, porque ES la
+credencial de ese endpoint), acá la credencial real es el access token del header — el
+`refresh_token` del body es solo "cuál sesión revocar", y no encontrarlo no es un error (ver punto
+3 de "Comportamiento del servidor" arriba). El cliente puede llamar a este endpoint de forma
+best-effort (ej. en paralelo mientras ya limpia la sesión local y navega, sin esperar la respuesta)
+sin tener que manejar un caso de error distinto para "el token ya no estaba".
 
 ---
 
