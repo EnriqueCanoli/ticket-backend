@@ -36,24 +36,26 @@
   { "statusCode": 401, "message": "Unauthorized", "error": "Unauthorized" }
   ```
 - **Alcance estrictamente por cuenta, sin excepción**: ambos endpoints filtran siempre por
-  `t.usuarioId = <usuario del token>` (`reportes.controller.ts:36-37`, `:70`), resuelto vía
-  `@CurrentUser() usuario: Usuario` — nunca de query/body. Un usuario nunca ve ventas de otra
-  cuenta.
+  `t.usuarioId = <usuario del token>` (`.where('t.usuarioId = :usuarioId', ...)` en
+  `reportes.service.ts`, en `getDia` y `getMes`), resuelto vía `@CurrentUser() usuario: Usuario` en
+  el controller — nunca de query/body. Un usuario nunca ve ventas de otra cuenta.
 - **`ValidationPipe` global** (`main.ts`): `new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })`,
   sin `transform: true` — mismo pipe que el resto de módulos. **Ninguno de los dos endpoints declara
-  un DTO de query** (`@Query()` sobre una clase): `GET /reportes/dia` no tiene ningún `@Query()` en
-  absoluto, y `GET /reportes/mes` extrae `mes`/`anio` con `@Query('mes', ...)`/`@Query('anio', ...)`
+  un DTO de query** (`@Query()` sobre una clase): ambos extraen sus query params
+  (`tz` en `GET /reportes/dia`; `mes`/`anio`/`tz` en `GET /reportes/mes`) con `@Query('nombre', ...)`
   por parámetro individual, no con un objeto validado por `class-validator`. Consecuencia
   observable: **`forbidNonWhitelisted` nunca se aplica a la query string de ninguno de los dos
-  endpoints** — cualquier query param extra que el cliente agregue se ignora silenciosamente, nunca
-  produce `400`. Mismo patrón/mecanismo que `GET /productos/catalogo` (ver
-  `productos/API_INTEGRATION.md` §4). Ver [diferencia 2](#diferencias-vs-diseño-original).
-- **Validación de `mes`/`anio` vía `ParseIntPipe` por parámetro** (`reportes.controller.ts:59-60`),
-  no vía DTO: como el `ValidationPipe` global no usa `transform: true`, un DTO con `@IsInt()` sobre
-  un query param fallaría siempre (los query params llegan como `string` crudo). `ParseIntPipe` no
-  valida rangos, así que el rango `1`–`12` de `mes` y que `anio` sea positivo se valida a mano en el
-  controller, **después** de que `ParseIntPipe` ya convirtió el valor a `number` (o lo rechazó antes
-  de llegar ahí).
+  endpoints** — cualquier query param extra no declarado que el cliente agregue se ignora
+  silenciosamente, nunca produce `400` (`tz` sí se valida, pero a mano en el controller con
+  `Intl.DateTimeFormat`, no vía este mecanismo). Mismo patrón/mecanismo que `GET /productos/catalogo`
+  (ver `productos/API_INTEGRATION.md` §4). Ver [diferencia 2](#diferencias-vs-diseño-original).
+- **Validación de `mes`/`anio` vía `ParseIntPipe` por parámetro**, no vía DTO: como el
+  `ValidationPipe` global no usa `transform: true`, un DTO con `@IsInt()` sobre un query param
+  fallaría siempre (los query params llegan como `string` crudo). `ParseIntPipe` no valida rangos,
+  así que el rango `1`–`12` de `mes` y que `anio` sea positivo se valida a mano en el controller,
+  **después** de que `ParseIntPipe` ya convirtió el valor a `number` (o lo rechazó antes de llegar
+  ahí). `tz` se valida de forma análoga pero con `Intl.DateTimeFormat(undefined, { timeZone: tz })`
+  en vez de `ParseIntPipe` — ver más abajo.
 - **Formato de error**: no hay `ExceptionFilter` custom (no se encontró ninguno en
   `reportes.module.ts`, `app.module.ts` ni `main.ts`), así que todos los errores usan el formato
   default de Nest. Los `400` de este módulo tienen `message` como **string simple** en todos los
@@ -65,15 +67,28 @@
   `numericTransformer`** que sí aplica en las entidades `Producto`/`TicketItem`/`Ticket` (ver
   `productos/API_INTEGRATION.md` §1, `tickets/API_INTEGRATION.md` §1). El driver `pg` entrega esas
   columnas `numeric` como `string`. `ReportesService` las convierte a mano con `Number(...)` en
-  `toReporteDiaItem`/`toReporteMesItem` (`reportes.service.ts:110-130`) antes de responder — el
+  `toReporteDiaItem`/`toReporteMesItem` (`reportes.service.ts`) antes de responder — el
   cliente sí recibe número JSON (`"venta": 46`, no `"venta": "46.00"`), pero es responsabilidad
   explícita del service, no de un transformer de entidad.
-- **`t.createdAt` (columna `timestamptz`)**: ambos endpoints arman su rango de fechas en SQL
-  (`CURRENT_DATE` para `dia`, `make_date(...)` + `EXTRACT(YEAR FROM CURRENT_DATE)` para `mes`),
-  nunca con `Date` de JavaScript — así "hoy"/"año actual" quedan definidos por la zona horaria de la
-  **sesión de Postgres**, no por la del proceso de Node ni la del dispositivo del cliente. No se
-  encontró configuración explícita de timezone en `src/` (ni en `main.ts` ni en la config de
-  TypeORM): el comportamiento depende de la config de sesión/SO del servidor de base de datos.
+- **`t.createdAt` (columna `timestamptz`) y el query param `tz`**: ambos endpoints aceptan un
+  query param opcional `tz` con la zona horaria IANA del dispositivo del cliente (ej.
+  `America/Cancun`, obtenida típicamente con
+  `Intl.DateTimeFormat().resolvedOptions().timeZone`). El rango de fechas (`CURRENT_DATE` →
+  medianoche local calculada con `AT TIME ZONE :tz` para `dia`; `make_date(...)` +
+  `EXTRACT(YEAR FROM (CURRENT_TIMESTAMP AT TIME ZONE :tz))` para `mes`) y, en `dia`, el
+  formato de `hora` (`TO_CHAR(t.createdAt AT TIME ZONE :tz, 'HH24:MI')`) se calculan enteramente
+  en SQL a partir de esa zona — nunca con `Date` de JavaScript ni con la zona de la **sesión de
+  Postgres**. Esto es deliberado: en Neon (producción) la sesión de Postgres es UTC, así que sin
+  este parámetro "hoy" y `hora` quedarían en UTC en vez de la zona real del usuario.
+  - Si `tz` **no viene**, el backend usa el fallback `America/Mexico_City` (constante
+    `TIMEZONE_FALLBACK` en `reportes.service.ts`) — pensado para no romper clientes viejos ya
+    instalados que todavía no mandan el param.
+  - Si `tz` **viene pero no es una zona IANA válida** (validado con
+    `Intl.DateTimeFormat(undefined, { timeZone: tz })`, que lanza `RangeError` ante un
+    identificador inválido), el endpoint responde `400` con `message` como string simple:
+    `"tz must be a valid IANA time zone"`. Ver [detalle de errores](#errores) de cada endpoint.
+  - `tz` viaja siempre como parámetro bindeado del `QueryBuilder`, nunca interpolado como string
+    en el SQL.
 - **`GET /reportes/dia` y `GET /reportes/mes` nunca lanzan `404`**: ambos responden `200 OK` con
   `[]` cuando no hay filas que cumplan el filtro (usuario sin ventas ese día/mes) — no es un error.
 - **`costo_validado` en ambos endpoints**: viene del `innerJoin` contra `productos` que ya existía
@@ -89,30 +104,38 @@
 
 ## 2. GET /reportes/dia
 
-Devuelve las líneas de venta individuales del día calendario actual (según la sesión de Postgres)
-del usuario autenticado (`ReportesController.getDia` → `ReportesService.getDia`).
+Devuelve las líneas de venta individuales del día calendario actual **en la zona horaria del
+cliente** (`tz`, o el fallback `America/Mexico_City` si no vino) del usuario autenticado
+(`ReportesController.getDia` → `ReportesService.getDia`).
 
-**Headers**: `Authorization: Bearer <access_token>`. Sin body ni query params.
+**Headers**: `Authorization: Bearer <access_token>`. Sin body.
+
+### Query params
+
+| Param | Tipo | Requerido | Validación real |
+|---|---|---|---|
+| `tz` | `string` | No | Zona horaria IANA (ej. `America/Cancun`). Si viene, se valida con `Intl.DateTimeFormat(undefined, { timeZone: tz })` — inválida → `400`. Si no viene, se usa el fallback `America/Mexico_City`. |
 
 ```
 GET /reportes/dia
+GET /reportes/dia?tz=America/Cancun
 ```
 
-El método del controller no declara ningún parámetro `@Query()` (`reportes.controller.ts:36`, solo
-recibe `@CurrentUser()`) — cualquier query param que el cliente agregue se ignora silenciosamente
-(ver [§1](#1-convenciones-generales)).
+Cualquier otro query param que el cliente agregue se ignora silenciosamente (ver
+[§1](#1-convenciones-generales)).
 
-### Comportamiento del servidor (`reportes.service.ts:49-68`)
+### Comportamiento del servidor (`reportes.service.ts`)
 
 - `JOIN` interno (`innerJoin`) de `ticket_items` contra `tickets` (`ti.ticket`) y `productos`
   (`ti.producto`).
-- Filtro: `t.usuarioId = <usuario del token>` **y** `t.createdAt >= CURRENT_DATE` **y**
-  `t.createdAt < CURRENT_DATE + interval '1 day'` — el rango completo se calcula en SQL, no en JS.
+- Filtro: `t.usuarioId = <usuario del token>` **y** `t.createdAt` dentro de la medianoche a
+  medianoche local **de `tz`** (no `CURRENT_DATE` crudo) — el rango completo se calcula en SQL, no
+  en JS, usando `AT TIME ZONE :tz` en ambos extremos.
 - `costo` es el **costo total de la línea** (`ti.cantidad * ti.costoUnitario`), no el costo
   unitario.
-- `hora` se formatea en SQL: `TO_CHAR(t.createdAt, 'HH24:MI')` — string `"HH:mm"` en formato 24
-  horas, con la misma referencia horaria (sesión de Postgres) usada para decidir el rango del día.
-  El cliente no necesita convertir ningún timestamp ni aplicar su propia zona horaria.
+- `hora` se formatea en SQL: `TO_CHAR(t.createdAt AT TIME ZONE :tz, 'HH24:MI')` — string `"HH:mm"`
+  en formato 24 horas, ya convertido a la zona horaria del cliente. El cliente no necesita aplicar
+  ninguna conversión de zona propia sobre este string.
 - Orden: `t.createdAt ASC` (más antigua primero).
 - Sin límite ni paginación.
 - El filtro de rango es sobre `tickets.created_at` (no existe `created_at` propio en
@@ -154,9 +177,10 @@ se dispara la corrección retroactiva de `ticket_items.costo_unitario` ya docume
 
 | Código | Condición exacta en el código |
 |---|---|
+| `400` | `tz` presente pero no es una zona IANA válida — `message`: `"tz must be a valid IANA time zone"` |
 | `401` | Header `Authorization` ausente, mal formado, token inválido/expirado, o el usuario del token ya no existe — mismo comportamiento default de `JwtAuthGuard`/Passport documentado en `auth/API_INTEGRATION.md` §5 |
 
-No hay `400` posible: el endpoint no acepta ningún input (ni body ni query params validados).
+`tz` **ausente** nunca produce `400` por sí solo (se usa el fallback).
 
 ---
 
@@ -171,12 +195,14 @@ Devuelve los totales del mes/año pedidos, agregados por producto, del usuario a
 
 | Param | Tipo | Requerido | Validación real |
 |---|---|---|---|
-| `mes` | `integer` | **Sí** | `@Query('mes', ParseIntPipe)` (`reportes.controller.ts:59`). Debe ser un entero (`ParseIntPipe`, ver mecanismo abajo) y estar en `1`–`12` (chequeo manual en el controller, `reportes.controller.ts:63-65`). |
-| `anio` | `integer` | **No** | `@Query('anio', new ParseIntPipe({ optional: true }))` (`reportes.controller.ts:60`). Si viene, debe ser un entero `>= 1` (chequeo manual, `reportes.controller.ts:66-68`). Ver comportamiento exacto cuando se omite más abajo. |
+| `mes` | `integer` | **Sí** | `@Query('mes', ParseIntPipe)`. Debe ser un entero (`ParseIntPipe`, ver mecanismo abajo) y estar en `1`–`12` (chequeo manual en el controller). |
+| `anio` | `integer` | **No** | `@Query('anio', new ParseIntPipe({ optional: true }))`. Si viene, debe ser un entero `>= 1` (chequeo manual). Ver comportamiento exacto cuando se omite más abajo. |
+| `tz` | `string` | No | Zona horaria IANA del dispositivo del cliente (ej. `America/Cancun`). Misma validación y mismo fallback (`America/Mexico_City`) que en `GET /reportes/dia` — ver [§2](#2-get-reportesdia). |
 
 ```
 GET /reportes/mes?mes=7
 GET /reportes/mes?mes=1&anio=2026
+GET /reportes/mes?mes=7&tz=America/Cancun
 ```
 
 #### Mecanismo de `ParseIntPipe` (aplica a ambos params)
@@ -207,7 +233,7 @@ if (mes < 1 || mes > 12) throw new BadRequestException(`mes must be between 1 an
 if (anio !== undefined && anio < 1) throw new BadRequestException('anio must be a positive integer');
 ```
 
-(`reportes.controller.ts:63-68`) — estos dos `400` sí tienen mensaje custom, string simple:
+(`reportes.controller.ts`, método `getMes`) — estos dos `400` sí tienen mensaje custom, string simple:
 `"mes must be between 1 and 12"` y `"anio must be a positive integer"` respectivamente. Nota:
 `ParseIntPipe` acepta enteros negativos (`"-3"` matchea el regex), así que un `anio` o `mes`
 negativo **sí** llega a este chequeo manual — no lo bloquea `ParseIntPipe`, lo bloquea esta
@@ -218,32 +244,38 @@ validación de rango explícita.
 **Confirmado leyendo el código actual**: ya no existe ningún `DefaultValuePipe` con
 `new Date().getFullYear()` en este endpoint. El flujo real es:
 
-1. **Controller** (`reportes.controller.ts:60`): `@Query('anio', new ParseIntPipe({ optional: true })) anio: number | undefined`.
+1. **Controller** (`reportes.controller.ts`, método `getMes`): `@Query('anio', new ParseIntPipe({ optional: true })) anio: number | undefined`.
    Cuando el cliente no manda `anio`, el pipe devuelve literalmente `undefined` — no se calcula
    ningún año por default en JavaScript en este punto. `undefined` se pasa tal cual a
    `reportesService.getMes(usuario.id, mes, anio)`.
-2. **Service** (`reportes.service.ts:85-104`): `rangoParams = { anio: anio ?? null, mes }` — si
-   `anio` es `undefined`, el parámetro SQL `:anio` viaja como `null`. La expresión de año usada en
-   ambos `andWhere` es:
+2. **Service** (`reportes.service.ts`): `rangoParams = { anio: anio ?? null, mes, zonaHoraria }` —
+   si `anio` es `undefined`, el parámetro SQL `:anio` viaja como `null`. La expresión de año usada
+   en ambos `andWhere` es:
    ```sql
-   COALESCE(:anio::int, EXTRACT(YEAR FROM CURRENT_DATE)::int)
+   COALESCE(:anio::int, EXTRACT(YEAR FROM (CURRENT_TIMESTAMP AT TIME ZONE :zonaHoraria))::int)
    ```
-   Cuando `:anio` es `null`, `COALESCE` resuelve al año que devuelve `EXTRACT(YEAR FROM
-   CURRENT_DATE)` — **evaluado por Postgres en el momento exacto de ejecutar esa query**, contra la
-   fecha actual real del servidor de base de datos, no un valor calculado una sola vez al arrancar
-   el proceso de Node ni cacheado entre requests. Cada request sin `anio` vuelve a evaluar
-   `CURRENT_DATE` de cero.
-3. El rango de fechas del mes se arma con `make_date(<añoResuelto>, :mes, 1)` hasta
-   `make_date(<añoResuelto>, :mes, 1) + interval '1 month'`, usando ese año ya resuelto (explícito o
-   por `COALESCE`) de forma idéntica en ambos casos — no hay una rama de código distinta para "con
-   año" vs. "sin año", es la misma expresión SQL en los dos casos.
+   Cuando `:anio` es `null`, `COALESCE` resuelve al año actual **en la zona horaria del cliente**
+   (`tz`, o el fallback si no vino) — **evaluado por Postgres en el momento exacto de ejecutar esa
+   query**, no un valor calculado una sola vez al arrancar el proceso de Node ni cacheado entre
+   requests. Cada request sin `anio` vuelve a evaluar esto de cero. Antes de este cambio se usaba
+   `EXTRACT(YEAR FROM CURRENT_DATE)` (zona de la sesión de Postgres); ahora es explícitamente la
+   zona del cliente, consistente con `GET /reportes/dia`.
+3. El rango de fechas del mes se arma con `make_date(<añoResuelto>, :mes, 1)::timestamp AT TIME
+   ZONE :zonaHoraria` hasta `(make_date(<añoResuelto>, :mes, 1)::timestamp + interval '1 month')
+   AT TIME ZONE :zonaHoraria`, usando ese año ya resuelto (explícito o por `COALESCE`) de forma
+   idéntica en ambos casos — no hay una rama de código distinta para "con año" vs. "sin año", es la
+   misma expresión SQL en los dos casos. El `::timestamp` explícito antes del `AT TIME ZONE`
+   exterior es necesario: sin él, Postgres resuelve la ambigüedad de casts implícitos de `date`
+   prefiriendo `timestamptz`, lo que reinterpretaría la fecha con la zona de la sesión en vez de
+   `:zonaHoraria` — ver el detalle en el JSDoc de `ReportesService.getDia`.
 
 **Por qué esto importa para el cliente**: si el servidor de Node lleva varios días/semanas corriendo
 sin reiniciarse y cruza un Año Nuevo, `GET /reportes/mes?mes=1` (sin `anio`) seguirá resolviendo
 correctamente al año nuevo en cada request — no queda "atascado" en el año en que arrancó el
-proceso. Esto es exactamente lo que el comentario en `reportes.controller.ts:48-54` y
-`reportes.service.ts:76-84` documenta como motivo explícito de esta implementación (evitar el bug
-de un default calculado una sola vez en JS). Ver también [diferencia 1](#diferencias-vs-diseño-original).
+proceso. Esto es exactamente lo que el comentario JSDoc del método `getMes` en
+`reportes.controller.ts` y `reportes.service.ts` documenta como motivo explícito de esta
+implementación (evitar el bug de un default calculado una sola vez en JS). Ver también
+[diferencia 1](#diferencias-vs-diseño-original).
 
 ### Casos límite
 
@@ -262,7 +294,7 @@ de un default calculado una sola vez en JS). Ver también [diferencia 1](#difere
 - **`mes`/`anio` con ceros a la izquierda** (`mes=07`): `ParseIntPipe` los acepta (el regex
   `/^-?\d+$/` no distingue), `parseInt("07", 10)` → `7`, se comporta igual que `mes=7`.
 
-### Comportamiento del servidor — resto de la query (`reportes.service.ts:85-107`)
+### Comportamiento del servidor — resto de la query (`reportes.service.ts`, método `getMes`)
 
 - `JOIN` interno de `ticket_items` contra `tickets` y `productos`, filtrado por
   `t.usuarioId = <usuario del token>` y el rango de fechas descrito arriba.
@@ -303,11 +335,13 @@ medio, sin que las ventas de ese mes se hayan vuelto a tocar.
 | `400` | `mes` sintácticamente entero pero fuera de `1`–`12` (incluye negativos y `0`) — `message`: `"mes must be between 1 and 12"` |
 | `400` | `anio` presente pero no matchea `/^-?\d+$/` — `message`: `"Validation failed (numeric string is expected)"` |
 | `400` | `anio` presente, sintácticamente entero, pero `< 1` (incluye negativos y `0`) — `message`: `"anio must be a positive integer"` |
+| `400` | `tz` presente pero no es una zona IANA válida — `message`: `"tz must be a valid IANA time zone"` |
 | `401` | No autenticado — mismo comportamiento que `GET /reportes/dia` |
 
-`anio` **ausente** nunca produce `400` por sí solo — ver [comportamiento del default](#comportamiento-exacto-de-anio-cuando-no-se-manda-default)
-arriba. Ningún query param extra no declarado (`foo=bar`) produce `400` en este endpoint (ver
-[§1](#1-convenciones-generales)).
+`anio` y `tz` **ausentes** nunca producen `400` por sí solos — ver [comportamiento del
+default](#comportamiento-exacto-de-anio-cuando-no-se-manda-default) arriba (para `anio`) y
+[§2](#2-get-reportesdia) (fallback de `tz`). Ningún query param extra no declarado (`foo=bar`)
+produce `400` en este endpoint (ver [§1](#1-convenciones-generales)).
 
 ---
 

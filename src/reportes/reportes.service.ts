@@ -33,6 +33,14 @@ interface RawReporteMesRow {
   costo_validado: boolean;
 }
 
+/**
+ * Zona horaria IANA usada cuando el cliente no manda `tz` (clientes viejos ya
+ * instalados que todavía no envían el query param). No hardcodear este
+ * string en ningún otro lugar de este archivo — todas las queries deben
+ * referenciar esta constante.
+ */
+const TIMEZONE_FALLBACK = 'America/Mexico_City';
+
 @Injectable()
 export class ReportesService {
   constructor(
@@ -44,14 +52,41 @@ export class ReportesService {
    * GET /reportes/dia (features/vendido/ENDPOINTS.md sección 2): líneas de
    * venta individuales del día calendario actual del usuario autenticado.
    *
-   * El rango del día (§5.9) se calcula enteramente en SQL con `CURRENT_DATE`
-   * (zona horaria de la sesión de Postgres), no con `Date` de JavaScript, para
-   * no desalinear "hoy" respecto a la zona del servidor. `hora` (§5.2) se
-   * formatea también en SQL (`TO_CHAR(t.createdAt, 'HH24:MI')`) con la misma
-   * referencia horaria usada para decidir el rango, así el cliente no aplica
-   * ninguna conversión de zona propia.
+   * `tz` es la zona horaria IANA del dispositivo del cliente (validada en el
+   * controller; usa `TIMEZONE_FALLBACK` si el cliente no la mandó). El rango
+   * del día y `hora` (§5.2, §5.9) se calculan enteramente en SQL a partir de
+   * esa zona — nunca de la zona de la sesión de Postgres ni de `Date` de
+   * JavaScript — así "hoy" y la hora mostrada quedan alineados con el
+   * dispositivo del usuario sin importar en qué zona corra el servidor de
+   * base de datos (relevante en Neon, donde la sesión es UTC).
+   *
+   * El rango se arma con la medianoche local del usuario en ambos extremos:
+   * `(CURRENT_TIMESTAMP AT TIME ZONE :tz)::date` primero convierte el
+   * instante actual a la hora de pared en `tz` (esa forma de `AT TIME ZONE`,
+   * aplicada a un `timestamptz`, devuelve un `timestamp` sin zona) y trunca
+   * al día; el `AT TIME ZONE :tz` exterior reinterpreta esa fecha/hora de
+   * pared como perteneciente a `tz` y la vuelve a convertir a `timestamptz`
+   * (la otra dirección de `AT TIME ZONE`, aplicada a un `timestamp`) para
+   * poder compararla contra `t.createdAt`.
+   *
+   * IMPORTANTE: entre el `::date` y el `AT TIME ZONE` exterior se agrega un
+   * `::timestamp` explícito. Sin él, `date AT TIME ZONE zone` es ambiguo —
+   * `date` tiene cast implícito tanto a `timestamp` como a `timestamptz`, y
+   * Postgres desempata prefiriendo `timestamptz` (tipo preferido de la
+   * categoría datetime). Esa resolución interpreta la fecha truncada como
+   * medianoche en la zona de la SESIÓN (no en `tz`) antes de convertirla —
+   * reintroduciendo en silencio la misma dependencia de la zona del servidor
+   * que este cambio busca eliminar. Verificado localmente: sin el
+   * `::timestamp`, el bound resultante cambiaba varias horas según
+   * `SET TIME ZONE 'UTC'` vs. `'America/Mexico_City'` en la misma sesión;
+   * con el `::timestamp`, el bound es el mismo instante absoluto sin
+   * importar la zona de la sesión. Los bounds quedan como constantes por
+   * query (no se envuelve `t.createdAt` en ninguna función), así el filtro
+   * sigue siendo sargable y el índice sobre `tickets` sigue sirviendo.
    */
-  async getDia(usuarioId: string): Promise<ReporteDiaItem[]> {
+  async getDia(usuarioId: string, tz?: string): Promise<ReporteDiaItem[]> {
+    const zonaHoraria = tz ?? TIMEZONE_FALLBACK;
+
     const rows = await this.ticketItemRepository
       .createQueryBuilder('ti')
       .innerJoin('ti.ticket', 't')
@@ -62,11 +97,19 @@ export class ReportesService {
       .addSelect('ti.cantidad', 'cantidad')
       .addSelect('ti.subtotal', 'venta')
       .addSelect('ti.cantidad * ti.costoUnitario', 'costo')
-      .addSelect("TO_CHAR(t.createdAt, 'HH24:MI')", 'hora')
+      .addSelect(
+        "TO_CHAR(t.createdAt AT TIME ZONE :zonaHoraria, 'HH24:MI')",
+        'hora',
+      )
       .addSelect('p.costoValidado', 'costo_validado')
       .where('t.usuarioId = :usuarioId', { usuarioId })
-      .andWhere('t.createdAt >= CURRENT_DATE')
-      .andWhere("t.createdAt < CURRENT_DATE + interval '1 day'")
+      .andWhere(
+        't.createdAt >= (CURRENT_TIMESTAMP AT TIME ZONE :zonaHoraria)::date::timestamp AT TIME ZONE :zonaHoraria',
+      )
+      .andWhere(
+        "t.createdAt < ((CURRENT_TIMESTAMP AT TIME ZONE :zonaHoraria)::date::timestamp + interval '1 day') AT TIME ZONE :zonaHoraria",
+      )
+      .setParameter('zonaHoraria', zonaHoraria)
       .orderBy('t.createdAt', 'ASC')
       .getRawMany<RawReporteDiaRow>();
 
@@ -83,19 +126,29 @@ export class ReportesService {
    * ningún default en JS (evitaría quedar fijo al año en que arrancó el
    * proceso de Node si el servidor sigue corriendo al cruzar un Año Nuevo).
    * En su lugar se pasa `null` como parámetro SQL y `COALESCE` resuelve el
-   * año contra `EXTRACT(YEAR FROM CURRENT_DATE)` — el año actual de Postgres,
-   * evaluado en cada request, consistente con el mismo criterio de "zona del
-   * servidor" que `getDia` ya usa con `CURRENT_DATE` (§5.9). El rango del mes
-   * se arma con `make_date(...)` sobre ese año resuelto.
+   * año contra `EXTRACT(YEAR FROM (CURRENT_TIMESTAMP AT TIME ZONE :zonaHoraria))`
+   * — el año actual en la zona horaria del cliente (`tz`, validada en el
+   * controller; usa `TIMEZONE_FALLBACK` si no vino), evaluado en cada
+   * request. El rango del mes se arma con `make_date(...)` sobre ese año
+   * resuelto, reinterpretado en esa misma zona con `AT TIME ZONE :zonaHoraria`
+   * (mismo criterio que `getDia` — nunca la zona de la sesión de Postgres).
+   * Igual que en `getDia`, `make_date(...)` (tipo `date`) se castea
+   * explícitamente a `::timestamp` antes del `AT TIME ZONE` exterior — sin
+   * ese cast, la ambigüedad de casts implícitos de `date` hace que Postgres
+   * prefiera `timestamptz` y la fecha se reinterprete con la zona de la
+   * sesión en vez de `:zonaHoraria` (ver el detalle completo en el JSDoc de
+   * `getDia`).
    */
   async getMes(
     usuarioId: string,
     mes: number,
     anio: number | undefined,
+    tz?: string,
   ): Promise<ReporteMesItem[]> {
-    const rangoParams = { anio: anio ?? null, mes };
+    const zonaHoraria = tz ?? TIMEZONE_FALLBACK;
+    const rangoParams = { anio: anio ?? null, mes, zonaHoraria };
     const anioExpr =
-      'COALESCE(:anio::int, EXTRACT(YEAR FROM CURRENT_DATE)::int)';
+      'COALESCE(:anio::int, EXTRACT(YEAR FROM (CURRENT_TIMESTAMP AT TIME ZONE :zonaHoraria))::int)';
 
     const rows = await this.ticketItemRepository
       .createQueryBuilder('ti')
@@ -111,9 +164,12 @@ export class ReportesService {
       )
       .addSelect('p.costoValidado', 'costo_validado')
       .where('t.usuarioId = :usuarioId', { usuarioId })
-      .andWhere(`t.createdAt >= make_date(${anioExpr}, :mes, 1)`, rangoParams)
       .andWhere(
-        `t.createdAt < make_date(${anioExpr}, :mes, 1) + interval '1 month'`,
+        `t.createdAt >= make_date(${anioExpr}, :mes, 1)::timestamp AT TIME ZONE :zonaHoraria`,
+        rangoParams,
+      )
+      .andWhere(
+        `t.createdAt < (make_date(${anioExpr}, :mes, 1)::timestamp + interval '1 month') AT TIME ZONE :zonaHoraria`,
         rangoParams,
       )
       .groupBy('p.id')
