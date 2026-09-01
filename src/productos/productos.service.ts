@@ -305,6 +305,7 @@ export class ProductosService {
       id: producto.id,
       nombre: producto.nombre,
       precio_venta: producto.precioVenta,
+      es_a_granel: producto.esAGranel,
     };
   }
 

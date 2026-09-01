@@ -142,13 +142,15 @@ Array de `ProductoSearchResult` (`interfaces/producto-response.interface.ts`), c
 
 ```json
 [
-  { "id": "uuid", "nombre": "Perron adulto Kg", "precio_venta": 27.00 },
-  { "id": "uuid", "nombre": "Perron adulto Bulto", "precio_venta": 547.00 }
+  { "id": "uuid", "nombre": "Perron adulto Kg", "precio_venta": 27.00, "es_a_granel": false },
+  { "id": "uuid", "nombre": "Perron adulto Bulto", "precio_venta": 547.00, "es_a_granel": false }
 ]
 ```
 
-Solo estos 3 campos — **no** incluye `costo` ni `costo_validado` (el mapper `toSearchResult()` los
-omite explícitamente, `productos.service.ts:145-151`).
+Solo estos 4 campos — **no** incluye `costo` ni `costo_validado` (el mapper `toSearchResult()` los
+omite explícitamente, `productos.service.ts:145-151`). Sí incluye `es_a_granel`: el frontend lo usa
+en `BuscarProductoScreen.tsx` para decidir si la línea del ticket permite capturar el total en vez
+de la cantidad.
 
 Si no hay coincidencias (incluyendo el caso en que el único producto con ese nombre está inactivo):
 `200 OK` con `[]` (no es un error).

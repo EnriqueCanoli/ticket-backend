@@ -1,12 +1,14 @@
 /**
  * Shape de cada elemento de `GET /productos` (ENDPOINTS.md sección 2 y §5.1):
  * acotado a lo que el buscador de `BuscarProductoScreen.tsx` necesita, sin
- * `costo`/`costo_validado`.
+ * `costo`/`costo_validado`. Sí incluye `es_a_granel`: el carrito lo necesita para
+ * decidir si la línea del ticket permite capturar el total en lugar de la cantidad.
  */
 export interface ProductoSearchResult {
   id: string;
   nombre: string;
   precio_venta: number;
+  es_a_granel: boolean;
 }
 
 /**
