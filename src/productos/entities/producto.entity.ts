@@ -59,6 +59,9 @@ export class Producto {
   @Column({ name: 'costo_validado', type: 'boolean', default: true })
   costoValidado: boolean;
 
+  @Column({ name: 'es_a_granel', type: 'boolean', default: false })
+  esAGranel: boolean;
+
   /**
    * Soft-delete flag (ENDPOINTS.md §6): `true` = visible en catálogo y
    * búsquedas; `false` = "borrado" para el cliente, pero la fila persiste

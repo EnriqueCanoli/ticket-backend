@@ -120,6 +120,7 @@ export class ProductosService {
       precioVenta: dto.precio_venta,
       costo: costoValidado ? dto.costo : DEFAULT_COSTO,
       costoValidado: costoValidado ? true : DEFAULT_COSTO_VALIDADO,
+      esAGranel: dto.es_a_granel ?? false,
       usuarioId,
     });
     try {
@@ -160,10 +161,11 @@ export class ProductosService {
     if (
       dto.nombre === undefined &&
       dto.costo === undefined &&
-      dto.precio_venta === undefined
+      dto.precio_venta === undefined &&
+      dto.es_a_granel === undefined
     ) {
       throw new BadRequestException(
-        'At least one of nombre, costo, precio_venta must be provided',
+        'At least one of nombre, costo, precio_venta, es_a_granel must be provided',
       );
     }
 
@@ -188,6 +190,9 @@ export class ProductosService {
     }
     if (dto.precio_venta !== undefined) {
       producto.precioVenta = dto.precio_venta;
+    }
+    if (dto.es_a_granel !== undefined) {
+      producto.esAGranel = dto.es_a_granel;
     }
     producto.costoValidado = true;
 
@@ -310,6 +315,7 @@ export class ProductosService {
       precio_venta: producto.precioVenta,
       costo: producto.costo,
       costo_validado: producto.costoValidado,
+      es_a_granel: producto.esAGranel,
       created_at: producto.createdAt,
       updated_at: producto.updatedAt,
     };
@@ -322,6 +328,7 @@ export class ProductosService {
       costo: producto.costo,
       precio_venta: producto.precioVenta,
       costo_validado: producto.costoValidado,
+      es_a_granel: producto.esAGranel,
     };
   }
 }

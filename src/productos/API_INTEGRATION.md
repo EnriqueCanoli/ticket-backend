@@ -177,6 +177,7 @@ alta completa desde la pantalla de catálogo), pero el endpoint es el mismo para
 | `nombre` | `string` | `@IsString()` + `@IsNotEmpty()` + `@Matches(/\S/, { message: 'nombre should not be empty' })` + `@MaxLength(150)` — requerido, al menos un carácter no-espacio, máximo 150 caracteres. |
 | `precio_venta` | `number` | `@IsNumber({ maxDecimalPlaces: 2 })` + `@Min(0)` — requerido, número (no string numérico: no hay `transform: true`), hasta 2 decimales, `>= 0`. |
 | `costo` | `number` | **Opcional**: `@IsOptional()` + `@IsNumber({ maxDecimalPlaces: 2 })` + `@Min(0)` — si se manda, misma regla que `precio_venta` (hasta 2 decimales, `>= 0`). Si se omite, el servidor aplica el default de alta rápida (ver abajo). |
+| `es_a_granel` | `boolean` | **Opcional**: `@IsOptional()` + `@IsBoolean()`. Si se omite, el servidor aplica `false` (producto por unidad, no a granel). |
 
 - Igual que en `search`, **no hay trim automático** de `nombre`: si el cliente manda
   `"  Producto  "`, la validación pasa (tiene caracteres no-espacio) y **se guarda tal cual, con
@@ -239,10 +240,15 @@ Shape `ProductoResponse` (`interfaces/producto-response.interface.ts`), construi
   "precio_venta": 23.00,
   "costo": 10.00,
   "costo_validado": true,
+  "es_a_granel": false,
   "created_at": "2026-08-17T12:00:00.000Z",
   "updated_at": "2026-08-17T12:00:00.000Z"
 }
 ```
+
+`es_a_granel` refleja lo que mandó el cliente en el request (`false` por default si se omitió) — a
+diferencia de `costo_validado`, no hay lógica derivada: es un valor directo con default explícito
+(`producto.entity.ts`, `default: false`).
 
 Nunca incluye `activo` — ningún mapper de este módulo lo expone en `ProductoResponse` (el único
 endpoint que devuelve `activo` es `DELETE /productos/:id`, ver [§6](#6-delete-productosid)).
@@ -293,12 +299,12 @@ Array de `ProductoCatalogoItem` (`interfaces/producto-response.interface.ts`), c
 
 ```json
 [
-  { "id": "uuid-1", "nombre": "Alpiste Normal", "costo": 10.00, "precio_venta": 23.00, "costo_validado": true },
-  { "id": "uuid-2", "nombre": "Maseca", "costo": 1.00, "precio_venta": 22.00, "costo_validado": false }
+  { "id": "uuid-1", "nombre": "Alpiste Normal", "costo": 10.00, "precio_venta": 23.00, "costo_validado": true, "es_a_granel": false },
+  { "id": "uuid-2", "nombre": "Maseca", "costo": 1.00, "precio_venta": 22.00, "costo_validado": false, "es_a_granel": true }
 ]
 ```
 
-A diferencia de `GET /productos`, sí incluye `costo` y `costo_validado`; no incluye
+A diferencia de `GET /productos`, sí incluye `costo`, `costo_validado` y `es_a_granel`; no incluye
 `created_at`/`updated_at`/`activo`.
 
 Si el usuario no tiene productos activos: `200 OK` con `[]` (no es un error).
@@ -333,14 +339,15 @@ Edición parcial de un producto existente (`ProductosController.update` → `Pro
 | `nombre` | `string` | Opcional (`@IsOptional()`). Si está presente: `@IsString()` + `@IsNotEmpty()` + `@Matches(/\S/, { message: 'nombre should not be empty' })` + `@MaxLength(150)` — misma regla que en `POST`. |
 | `costo` | `number` | Opcional. Si está presente: `@IsNumber({ maxDecimalPlaces: 2 })` + `@Min(0)`. |
 | `precio_venta` | `number` | Opcional. Si está presente: `@IsNumber({ maxDecimalPlaces: 2 })` + `@Min(0)`. |
+| `es_a_granel` | `boolean` | Opcional. Si está presente: `@IsBoolean()`. |
 
-- Los tres campos son individualmente opcionales a nivel de DTO (`class-validator` no valida "al
+- Los cuatro campos son individualmente opcionales a nivel de DTO (`class-validator` no valida "al
   menos uno"), pero **`ProductosService.update` exige que al menos uno esté presente**: si
-  `dto.nombre === undefined && dto.costo === undefined && dto.precio_venta === undefined`, lanza
-  `BadRequestException('At least one of nombre, costo, precio_venta must be provided')`
-  (`productos.service.ts:97-99`) — `400` con `message` como **string simple**, no arreglo. Esta
-  verificación ocurre **antes** de buscar el producto en base de datos: un body vacío (`{}`) da
-  `400` incluso si el `id` de la URL no existe.
+  `dto.nombre === undefined && dto.costo === undefined && dto.precio_venta === undefined &&
+  dto.es_a_granel === undefined`, lanza `BadRequestException('At least one of nombre, costo,
+  precio_venta, es_a_granel must be provided')` (`productos.service.ts`) — `400` con `message` como
+  **string simple**, no arreglo. Esta verificación ocurre **antes** de buscar el producto en base
+  de datos: un body vacío (`{}`) da `400` incluso si el `id` de la URL no existe.
 - Igual que en `POST`, **no hay trim automático** de `nombre`: `ProductosService.update` asigna
   `producto.nombre = dto.nombre` directamente (`productos.service.ts:108-110`), sin `.trim()`.
 - **Campos explícitamente NO aceptados** (no declarados en el DTO, `400` por
@@ -348,7 +355,7 @@ Edición parcial de un producto existente (`ProductosController.update` → `Pro
   `created_at`, `updated_at`.
 
 ```json
-{ "nombre": "Alpiste Normal", "costo": 11.00, "precio_venta": 24.00 }
+{ "nombre": "Alpiste Normal", "costo": 11.00, "precio_venta": 24.00, "es_a_granel": true }
 ```
 
 ### Comportamiento del servidor (`productos.service.ts:109-176`)
@@ -360,7 +367,9 @@ Edición parcial de un producto existente (`ProductosController.update` → `Pro
    posibles: el `id` no existe, existe pero es de otro usuario, o existe pero ya está
    `activo = false` (soft-borrado). El cliente no puede distinguir cuál ocurrió a partir de la
    respuesta — a propósito, para no filtrar entre cuentas si un producto ajeno existe o no.
-3. Aplica únicamente los campos presentes en el body; los ausentes conservan su valor actual.
+3. Aplica únicamente los campos presentes en el body; los ausentes conservan su valor actual
+   (`es_a_granel` incluido: a diferencia de `costo_validado`, no se fuerza a ningún valor fijo — si
+   el cliente no lo manda, el producto conserva el que ya tenía).
 4. **`costo_validado` se fuerza siempre a `true`** (`producto.costoValidado = true;`,
    `productos.service.ts:146`), sin importar qué campos vinieron en el body — incluso si el
    cliente solo mandó `nombre` sin tocar `costo`.
@@ -400,6 +409,7 @@ Mismo shape `ProductoResponse` que `POST /productos`, ya con `costo_validado: tr
   "precio_venta": 24.00,
   "costo": 11.00,
   "costo_validado": true,
+  "es_a_granel": true,
   "created_at": "2026-01-10T09:00:00.000Z",
   "updated_at": "2026-08-17T12:05:00.000Z"
 }
@@ -410,7 +420,7 @@ Mismo shape `ProductoResponse` que `POST /productos`, ya con `costo_validado: tr
 | Código | Condición exacta en el código |
 |---|---|
 | `400` | `id` no es un UUID sintácticamente válido (`ParseUUIDPipe`, `message` string simple) |
-| `400` | Ningún campo presente en el body — `nombre`, `costo` y `precio_venta` los tres `undefined` (`message` string simple, lanzado a mano) |
+| `400` | Ningún campo presente en el body — `nombre`, `costo`, `precio_venta` y `es_a_granel` los cuatro `undefined` (`message` string simple, lanzado a mano) |
 | `400` | `nombre` presente pero vacío/solo-espacios/`> 150` chars; `costo`/`precio_venta` presentes pero negativos/no numéricos/`> 2` decimales; o campo extra no declarado (`message` arreglo, `class-validator`) |
 | `401` | No autenticado — mismo comportamiento que en `GET /productos` |
 | `404` | `id` no existe, o existe pero pertenece a otro usuario, o existe pero `activo = false` — **mismo body genérico** `{"statusCode":404,"message":"Producto not found","error":"Not Found"}` para las tres causas, intencionalmente, para no revelar cuál ocurrió |

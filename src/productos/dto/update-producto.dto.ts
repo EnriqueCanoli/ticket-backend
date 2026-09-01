@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -41,4 +42,8 @@ export class UpdateProductoDto {
   @Min(0)
   @Max(99999999.99)
   precio_venta?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  es_a_granel?: boolean;
 }

@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -49,4 +50,9 @@ export class CreateProductoDto {
   @Min(0)
   @Max(99999999.99)
   costo?: number;
+
+  /** Opcional: si se omite, el servicio aplica `false` (producto por unidad, no a granel). */
+  @IsOptional()
+  @IsBoolean()
+  es_a_granel?: boolean;
 }

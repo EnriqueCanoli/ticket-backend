@@ -19,6 +19,7 @@ export interface ProductoResponse {
   precio_venta: number;
   costo: number;
   costo_validado: boolean;
+  es_a_granel: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -34,6 +35,7 @@ export interface ProductoCatalogoItem {
   costo: number;
   precio_venta: number;
   costo_validado: boolean;
+  es_a_granel: boolean;
 }
 
 /** Shape de `DELETE /productos/:id` (features/productos/ENDPOINTS.md sección 5). */
