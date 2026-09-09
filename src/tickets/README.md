@@ -97,3 +97,27 @@ vive en `src/reportes/` (que inyecta `TicketItem` directamente y hace sus propio
    memoria antes del `INSERT` es un `number` de JS.
 7. `@Max(9999999.999)` en `cantidad` (dto) evita `numeric field overflow` de Postgres — no confundir
    con un límite de negocio de stock.
+8. **El `subtotal`/`total` persistido puede diferir en centavos del monto que el usuario tecleó
+   para un ítem a granel**, por la limitación de 3 decimales de `cantidad`. En el frontend
+   (`src/features/ticket/BuscarProductoScreen.tsx`, `handleMontoChange`), para productos
+   `es_a_granel` el usuario tipea un "monto final" ($) y la app deriva `cantidad = monto / precio`,
+   redondeada a 3 decimales con `formatCantidad` (`src/features/vendido/formatCantidad.ts`,
+   `Number(valor.toFixed(3))`) — así lo exige este DTO (`@IsNumber({maxDecimalPlaces:3})`). El
+   payload de `POST /tickets` manda solo esa `cantidad` ya redondeada; nunca el monto original. Acá
+   en `tickets.service.ts` (línea ~65) se recalcula `subtotal = cantidad * precio_venta_unitario`
+   con esa `cantidad` de 3 decimales y un `precio_venta_unitario` de 2 decimales — el producto
+   exacto puede tener hasta 5 decimales, así que Postgres redondea al persistir en
+   `numeric(12,2)`/`numeric(10,2)`, y ese redondeo no necesariamente reconstruye el monto original.
+   Ejemplo concreto: precio = 23.50, usuario tipea monto = 50.00 → `cantidad` derivada =
+   50/23.50 = 2.1276... → redondeada a `2.128` → `subtotal` recalculado = 2.128 × 23.50 = 50.008 →
+   persistido como `50.01`, un centavo distinto de lo que el usuario tecleó. El frontend ya detectó
+   una manifestación de este problema y la parchó **solo para lo que se muestra en pantalla**: el
+   total visible en `BuscarProductoScreen.tsx` usa `montoFinal` directo para ítems a granel en vez
+   de `precio * cantidad`, justamente para no mostrar este error de redondeo (ver
+   `src/features/ticket/README.md` sección "e", gotcha de `montoFinal`). Pero esa corrección es
+   solo cosmética del lado cliente — no cambia qué se manda al backend, así que el `ticket_items.subtotal`
+   y `tickets.total` que quedan en la base de datos sí arrastran el redondeo descrito arriba, aunque
+   la pantalla haya mostrado el monto exacto antes de guardar. Corregirlo de raíz (por ejemplo,
+   aceptando `subtotal`/`monto` como dato de negocio en vez de derivar todo de `cantidad`, o
+   ampliando la escala de `cantidad`) requeriría una migración de esquema evaluada aparte — no se
+   resuelve solo con un cambio de redondeo en el código actual.

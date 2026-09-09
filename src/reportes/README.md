@@ -91,6 +91,12 @@ el filtro sigue siendo sargable.
 sumada, no `SUM(venta) - SUM(costo)` calculado aparte (equivalente matemáticamente, pero es la forma
 real en el código).
 
+**`venta`** (`/dia`: `ti.subtotal` por línea; `/mes`: `SUM(ti.subtotal)` por producto) se lee
+directo de `ticket_items.subtotal`, sin recalcular nada acá. Para ítems a granel, ese `subtotal`
+puede diferir en centavos del monto que el usuario tecleó al momento de vender, por el redondeo de
+`cantidad` a 3 decimales descrito en `src/tickets/README.md` (gotcha #8) — este módulo solo reportea
+el valor ya persistido, no reintroduce ni corrige ese redondeo.
+
 **No hay filtrado de tickets "no confirmados" o "cancelados"** porque ese concepto **no existe en el
 schema**: `Ticket` no tiene columna de estado — es inmutable (ver `src/tickets/README.md`). Toda
 fila en `tickets` es por definición una venta confirmada. No asumir que falta un filtro `WHERE
@@ -132,3 +138,7 @@ que `costo`/`ganancia` calculados nunca operen sobre negativos inesperados.
    ZONE :zonaHoraria`.
 7. El PIN de 4 dígitos de la app es puramente gate de UI del cliente — el backend de `reportes` no
    sabe nada de él, ambos endpoints devuelven datos completos con solo el JWT.
+8. **`venta` puede diferir en centavos del monto que el usuario tecleó para un ítem a granel** —
+   viene directo de `ticket_items.subtotal`, que ya arrastra el redondeo de `cantidad` a 3 decimales
+   documentado en `src/tickets/README.md` (gotcha #8). No es un bug de este módulo: `reportes` no
+   recalcula nada, solo agrega/expone el `subtotal` ya persistido tal cual quedó en `POST /tickets`.
