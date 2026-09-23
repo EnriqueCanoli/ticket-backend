@@ -34,7 +34,7 @@ backend solo expone — nunca valida. Este repo es solo el backend (NestJS + Pos
   - La conexión en runtime vive en `src/app.module.ts` (`TypeOrmModule.forRootAsync`), vía
     `ConfigService`. Reusa las mismas variables de entorno que `data-source.ts` (no las credenciales
     hardcodeadas ni el código de config en sí).
-  - `migrations/` — 11 migraciones, única fuente de verdad del schema (`synchronize: false` en
+  - `migrations/` — 12 migraciones, única fuente de verdad del schema (`synchronize: false` en
     ambas configs). Convención de nombre: `<timestamp-ms>-<DescripciónPascalCase>.ts` (ej.
     `1786831831517-InitialSchema.ts`, `1786860000000-RenamePinHashToPinInUsuarios.ts`).
   - `transformers/numeric.transformer.ts` — transformer TypeORM para columnas `numeric` ↔ `number`
@@ -147,6 +147,14 @@ discutirlo explícitamente**:
   - `JWT_SECRET` — sin default, el arranque falla si falta (`getOrThrow`).
   - `ACCESS_TOKEN_TTL` (default `900`s), `REFRESH_TOKEN_TTL` (default `2592000`s) — opcionales.
   - `PORT` — opcional, default `3000`, tampoco listada en `.env.example`.
+  - `BREVO_API_KEY`, `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME` — envío de emails vía Brevo para el flujo
+    de recuperación de contraseña (`src/auth/mail.service.ts`). Sin `BREVO_API_KEY`, en
+    desarrollo/test el código de reset se loguea por consola en vez de enviarse; en producción
+    (`NODE_ENV=production`) el arranque falla explícitamente (chequeo fail-fast en el constructor
+    de `MailService` — a diferencia de `JWT_SECRET`, no usa `getOrThrow()` porque esa función no
+    detecta valor presente pero vacío, solo `undefined`).
+  - `PASSWORD_RESET_CODE_TTL_SECONDS` — opcional, default `900`s (15 min) — vida útil del código de
+    6 dígitos de "olvidé mi contraseña".
 - **Tests**: sí hay suite configurada (Jest, config embebida en `package.json`, sin
   `jest.config.*` separado). `npm test` corre specs unitarios (`*.spec.ts` dentro de `src/`), `npm
   run test:e2e` corre `test/app.e2e-spec.ts` (config `test/jest-e2e.json`), `npm run test:cov` para

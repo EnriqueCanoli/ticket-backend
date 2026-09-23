@@ -2,8 +2,10 @@
 
 ## 1. Propósito
 
-Registro/login con JWT + refresh token opaco rotativo, revocación de sesión (logout) y dos
-endpoints de perfil (`/me`, `/me/pin`). Es dueño exclusivo de la tabla `refresh_tokens`. La entidad
+Registro/login con JWT + refresh token opaco rotativo, revocación de sesión (logout), recuperación
+de contraseña vía código de 6 dígitos por email (`forgot-password`/`reset-password`) y dos
+endpoints de perfil (`/me`, `/me/pin`). Es dueño exclusivo de las tablas `refresh_tokens` y
+`password_reset_tokens`. La entidad
 `Usuario` vive físicamente en `src/usuarios/` (ver [sección 7](#7-entidad-usuario-src usuariosentitiesusuarioentityts))
 pero `auth` es su único consumidor con acceso real de datos (el único módulo con
 `Repository<Usuario>` inyectado) — ver `src/usuarios/README.md` para el detalle de por qué esa
@@ -102,11 +104,77 @@ Sin prefijo global de rutas (`@Controller()` vacío en `auth.controller.ts`).
 - El PIN es **puramente un gate de UI del cliente** — este endpoint solo lo expone, el backend nunca
   lo valida en ningún flujo.
 
+### `POST /auth/forgot-password`
+
+- Guard: ninguno. Throttle propio: **3 req / 15 min por IP**
+  (`@Throttle({default:{limit:3,ttl:900000}})`). Pública.
+- Body `ForgotPasswordDto`:
+  | campo | tipo/validación |
+  |---|---|
+  | `email` | `@IsEmail()` |
+- Éxito **siempre** `200`: `{ message: string }` con el mismo mensaje genérico
+  exista o no la cuenta — anti-enumeración deliberada, no distingue por diseño.
+- Si el email existe: borra cualquier `password_reset_tokens` previo de ese
+  usuario, genera un código de 6 dígitos (`randomInt(0, 1_000_000)` con
+  padding a la izquierda), lo persiste hasheado (mismo `hashOpaqueToken`
+  SHA-256 que `refresh_tokens`) con TTL `PASSWORD_RESET_CODE_TTL_SECONDS`
+  (default 900s = 15min), y dispara el envío del email **sin `await`**
+  (fire-and-forget, con `.catch()` que solo loguea) — así el tiempo de
+  respuesta no depende de si hubo que generar/enviar un código, evitando un
+  oráculo de temporización equivalente al de `login()`.
+- Envío real vía Brevo (`MailService.sendPasswordResetCode`, HTTP directo con
+  `fetch`, sin SDK). Si falta `BREVO_API_KEY` y `NODE_ENV !== 'production'`,
+  el código se loguea por consola (`[DEV] Código de reset para <email>: <code>`)
+  en vez de enviarse — permite probar el flujo completo sin cuenta de Brevo.
+- `429` throttler.
+
+### `POST /auth/reset-password`
+
+- Guard: ninguno. Throttle propio: **10 req / 15 min por IP**
+  (`@Throttle({default:{limit:10,ttl:900000}})`). Pública.
+- Body `ResetPasswordDto`:
+  | campo | tipo/validación |
+  |---|---|
+  | `email` | `@IsEmail()` |
+  | `code` | `@Matches(/^\d{6}$/)` — exactamente 6 dígitos |
+  | `password` | mismo regex + `@MaxBcryptBytes()` que `register`/`login` |
+
+  Sin `confirmPassword` (solo se valida en el cliente).
+- Éxito `200`, sin body relevante (no devuelve tokens — no hay auto-login).
+  Efectos: hashea y guarda la nueva contraseña, marca el token de reset
+  usado (`used_at`), y revoca en cascada **todos** los refresh tokens
+  activos del usuario (`UPDATE refresh_tokens SET revoked_at=now() WHERE
+  usuario_id=$1 AND revoked_at IS NULL`, dentro de la misma transacción con
+  lock) — cierra todas las sesiones existentes. Esta query es la misma que
+  usa `revokeAllActiveTokensForUser()` (detección de reuso en
+  `/auth/refresh`), pero **duplicada inline** acá en vez de reusar ese
+  método: necesita correr sobre el `manager` transaccional (mismo `SELECT
+  ... FOR UPDATE`, ver sección 5), no sobre el `refreshTokenRepository`
+  inyectado que usa ese método privado.
+- `400` — **todas** las siguientes causas colapsan al mismo mensaje genérico
+  `'El código es inválido o expiró'`, a propósito, para no revelar cuál fue
+  (mismo criterio anti-enumeración que otros flujos de este módulo):
+  - Email inexistente.
+  - No hay ningún token de reset vigente (`used_at IS NULL`) para ese usuario.
+  - El token vigente más reciente ya alcanzó 5 intentos fallidos
+    (`attempts >= 5`) — no se sigue incrementando después de eso.
+  - El token vigente más reciente ya expiró (`expires_at <= now()`).
+  - El código no coincide con el hash guardado — este caso además incrementa
+    `attempts` en 1 antes de responder.
+  - Error de validación de DTO (contraseña débil, código no numérico, campo
+    extra) usa el `400` default de `class-validator`/`ValidationPipe`
+    global — mismo formato (`message` array) que el resto del módulo, no el
+    mensaje genérico de arriba.
+- No valida que la contraseña nueva sea distinta de la anterior. No toca
+  `usuarios.pin` (feature no relacionada).
+- `429` throttler.
+
 ### Throttler
 
 - **Global** (`ThrottlerGuard` vía `APP_GUARD` en `app.module.ts`): 60 req/min por IP — aplica a todo
   endpoint sin `@Throttle` propio, **incluyendo `refresh`, `logout`, `/me`, `/me/pin`**.
-- `register`: 3 req/30min por IP. `login`: 5 req/min por IP.
+- `register`: 3 req/30min por IP. `login`: 5 req/min por IP. `forgot-password`:
+  3 req/15min por IP. `reset-password`: 10 req/15min por IP.
 - Excedido → `429`, formato default de `ThrottlerException`.
 
 ### Formato de errores
@@ -144,8 +212,12 @@ esto en cuenta.
   indefinidamente.
 - **El backend no distingue error de red vs. sesión inválida** — esa distinción (status 0 vs 401)
   vive enteramente en el cliente frontend; el backend solo produce 401/400/409/429 normales.
-- **No existe endpoint de "logout de todos los dispositivos"** — `revokeAllActiveTokensForUser` solo
-  se invoca internamente en la detección de reuso, no hay ruta pública que lo dispare a demanda.
+- **No existe endpoint de "logout de todos los dispositivos" dedicado** — `revokeAllActiveTokensForUser`
+  como método solo se invoca internamente en la detección de reuso de `/auth/refresh`. `POST
+  /auth/reset-password` produce el mismo efecto (revoca todos los refresh tokens activos del
+  usuario) pero como side-effect de cambiar la contraseña, con su propia query inline dentro de la
+  transacción — no hay ninguna ruta pública pensada para disparar la cascada de revocación a
+  demanda sin más consecuencias.
 
 ## 4. Restricciones de BD
 
@@ -171,6 +243,21 @@ relevantes para `auth`:
 - `expires_at timestamptz NOT NULL`, `created_at timestamptz DEFAULT now()`.
 - `revoked_at timestamptz NULL`.
 - `replaced_by_id uuid NULL` + FK autoreferencial `→ refresh_tokens(id) ON DELETE SET NULL`.
+
+### `password_reset_tokens`
+
+- `id uuid PK`.
+- `usuario_id uuid NOT NULL` + FK `→ usuarios(id) ON DELETE CASCADE` + índice
+  `IDX_password_reset_tokens_usuario_id`.
+- `code_hash varchar(255) NOT NULL` — SHA-256 hex del código de 6 dígitos, **sin** `UNIQUE`
+  (a diferencia de `refresh_tokens.token_hash`): el código no es globalmente único entre
+  usuarios, la búsqueda siempre es por `usuario_id` + comparación de hash.
+- `expires_at timestamptz NOT NULL`, `created_at timestamptz NOT NULL DEFAULT now()`.
+- `used_at timestamptz NULL` — `NULL` = vigente; se setea al usarse (uso único).
+- `attempts integer NOT NULL DEFAULT 0` — intentos fallidos contra ese token; a los 5 se
+  invalida sin seguir incrementando.
+- Solo puede existir un token vigente por usuario a la vez: `forgotPassword()` borra
+  cualquier fila previa de ese `usuario_id` antes de insertar la nueva.
 
 ## 5. Decisiones de diseño / gotchas
 
@@ -210,8 +297,8 @@ Documentadas aquí porque el documento viejo ya no existe en el repo:
 `src/usuarios/` no es un módulo funcional — no tiene controller, service, DTO ni `UsuariosModule`
 propio. Contiene únicamente `entities/usuario.entity.ts`, registrada directamente en
 `TypeOrmModule.forRootAsync()` (`app.module.ts`) y expuesta como repository solo en
-`AuthModule` (`TypeOrmModule.forFeature([Usuario, RefreshToken])`) — **`auth` es el único módulo con
-`Repository<Usuario>` inyectado**; `productos`/`tickets` solo tienen la relación `@ManyToOne` hacia
+`AuthModule` (`TypeOrmModule.forFeature([Usuario, RefreshToken, PasswordResetToken])`) — **`auth` es
+el único módulo con `Repository<Usuario>` inyectado**; `productos`/`tickets` solo tienen la relación `@ManyToOne` hacia
 `Usuario` por su FK, y `reportes` ni eso, solo el tipo para tipar `req.user`.
 
 Ver documentación completa de la entidad (columnas, relaciones, FKs entrantes de `tickets` y

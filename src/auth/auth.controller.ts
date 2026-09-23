@@ -12,6 +12,8 @@ import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { Usuario } from '../usuarios/entities/usuario.entity';
@@ -91,5 +93,19 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   mePin(@CurrentUser() usuario: Usuario): PinResponse {
     return this.authService.toPinResponse(usuario);
+  }
+
+  @Throttle({ default: { limit: 3, ttl: 900000 } })
+  @Post('auth/forgot-password')
+  @HttpCode(HttpStatus.OK)
+  forgotPassword(@Body() dto: ForgotPasswordDto): Promise<{ message: string }> {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 900000 } })
+  @Post('auth/reset-password')
+  @HttpCode(HttpStatus.OK)
+  resetPassword(@Body() dto: ResetPasswordDto): Promise<void> {
+    return this.authService.resetPassword(dto);
   }
 }

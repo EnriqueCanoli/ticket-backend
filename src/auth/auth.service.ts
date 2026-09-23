@@ -1,6 +1,8 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -11,9 +13,12 @@ import { randomBytes, createHash, randomInt } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
 import { Usuario } from '../usuarios/entities/usuario.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
+import { PasswordResetToken } from './entities/password-reset-token.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 import {
   AuthResponse,
@@ -22,6 +27,7 @@ import {
   TokenPairResponse,
   UserResponse,
 } from './interfaces/auth-response.interface';
+import { MailService } from './mail.service';
 
 /** Rondas de salt para bcryptjs (password). */
 const SALT_ROUNDS = 10;
@@ -45,6 +51,21 @@ const INVALID_CREDENTIALS_MESSAGE = 'Credenciales inválidas';
 
 /** Mensaje genérico para cualquier refresh token inválido/expirado/revocado/reusado. */
 const INVALID_REFRESH_TOKEN_MESSAGE = 'Refresh token inválido';
+
+/**
+ * Mensaje genérico para cualquier fallo de POST /auth/reset-password: email
+ * inexistente, código incorrecto, expirado, ya usado o intentos agotados
+ * colapsan todos a este mismo mensaje — a propósito, para no distinguir
+ * causas en la respuesta HTTP (ver src/auth/README.md).
+ */
+const INVALID_RESET_CODE_MESSAGE = 'El código es inválido o expiró';
+
+/** Mensaje fijo de éxito de POST /auth/forgot-password, exista o no la cuenta. */
+const FORGOT_PASSWORD_MESSAGE =
+  'Si el correo está registrado, recibirás un código para restablecer tu contraseña.';
+
+/** Intentos fallidos permitidos contra un mismo código antes de invalidarlo. */
+const PASSWORD_RESET_MAX_ATTEMPTS = 5;
 
 /** SQLSTATE de Postgres para `unique_violation`. */
 const POSTGRES_UNIQUE_VIOLATION = '23505';
@@ -70,19 +91,27 @@ type PostgresDriverError = Error & {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   /** Vida útil del access token, en segundos. Default 900 (15 min) — AUTH_ENDPOINTS.md sección 2. */
   private readonly accessTokenTtlSeconds: number;
 
   /** Vida útil del refresh token, en segundos. Default 2 592 000 (30 días). */
   private readonly refreshTokenTtlSeconds: number;
 
+  /** Vida útil del código de reset de contraseña, en milisegundos. Default 900s (15 min). */
+  private readonly passwordResetCodeTtlMs: number;
+
   constructor(
     @InjectRepository(Usuario)
     private readonly usuarioRepository: Repository<Usuario>,
     @InjectRepository(RefreshToken)
     private readonly refreshTokenRepository: Repository<RefreshToken>,
+    @InjectRepository(PasswordResetToken)
+    private readonly passwordResetTokenRepository: Repository<PasswordResetToken>,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly mailService: MailService,
   ) {
     this.accessTokenTtlSeconds = parseInt(
       this.configService.get<string>('ACCESS_TOKEN_TTL', '900'),
@@ -92,6 +121,14 @@ export class AuthService {
       this.configService.get<string>('REFRESH_TOKEN_TTL', '2592000'),
       10,
     );
+    this.passwordResetCodeTtlMs =
+      parseInt(
+        this.configService.get<string>(
+          'PASSWORD_RESET_CODE_TTL_SECONDS',
+          '900',
+        ),
+        10,
+      ) * 1000;
   }
 
   async register(dto: RegisterDto): Promise<AuthResponse> {
@@ -282,6 +319,125 @@ export class AuthService {
 
   toPinResponse(usuario: Usuario): PinResponse {
     return { pin: usuario.pin };
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
+    const email = dto.email.trim().toLowerCase();
+    const usuario = await this.usuarioRepository.findOne({
+      where: { email },
+    });
+
+    if (usuario) {
+      await this.passwordResetTokenRepository.delete({
+        usuarioId: usuario.id,
+      });
+
+      const code = this.generatePasswordResetCode();
+      const token = this.passwordResetTokenRepository.create({
+        usuarioId: usuario.id,
+        codeHash: this.hashOpaqueToken(code),
+        expiresAt: new Date(Date.now() + this.passwordResetCodeTtlMs),
+      });
+      await this.passwordResetTokenRepository.save(token);
+
+      // Fire-and-forget: no se espera la respuesta del proveedor de correo
+      // para no acoplar el tiempo de esta request a él, y sobre todo para no
+      // filtrar por temporización si el email existe (a diferencia de
+      // login(), acá no aplica el truco de DUMMY_PASSWORD_HASH porque no hay
+      // bcrypt.compare de por medio — la asimetría real es "generar/guardar/
+      // enviar" vs. "no hacer nada").
+      this.mailService.sendPasswordResetCode(email, code).catch((err) => {
+        this.logger.error('Error enviando código de reset', err);
+      });
+    }
+
+    return { message: FORGOT_PASSWORD_MESSAGE };
+  }
+
+  async resetPassword(dto: ResetPasswordDto): Promise<void> {
+    const email = dto.email.trim().toLowerCase();
+    const usuario = await this.usuarioRepository.findOne({
+      where: { email },
+    });
+    if (!usuario) {
+      throw new BadRequestException(INVALID_RESET_CODE_MESSAGE);
+    }
+
+    // Precalculado fuera de la transacción para no mantener el bloqueo de
+    // fila (ver más abajo) más tiempo del necesario — bcrypt.hash() es lo más
+    // costoso de esta secuencia y no depende de ningún dato leído dentro del
+    // bloque transaccional.
+    const newPasswordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
+
+    // Todo el tramo de lectura+validación+escritura del token va dentro de
+    // una transacción con SELECT ... FOR UPDATE sobre la fila del token
+    // (lock: pessimistic_write). Sin esto, dos requests concurrentes con el
+    // mismo código válido leían ambas el token en estado "no usado", pasaban
+    // las validaciones y escribían por separado (condición de carrera:
+    // varias respuestas 200 OK para un solo código, ver QA 2026-09-22). Con
+    // el bloqueo, la segunda request queda bloqueada hasta que la primera
+    // haga commit/rollback y, al desbloquearse, relee la fila ya actualizada
+    // (usedAt ya fijado o attempts ya incrementado) y la rechaza como
+    // corresponde.
+    //
+    // Importante: el callback NUNCA lanza — devuelve `true` cuando la
+    // operación debe fallar. Si lanzáramos BadRequestException dentro del
+    // callback, `manager.transaction()` hace ROLLBACK de toda la
+    // transacción, lo que deshace también el `save(token)` que incrementa
+    // `attempts` en la rama de código incorrecto (se detectó exactamente
+    // este bug durante la verificación local: 5 códigos incorrectos seguidos
+    // dejaban `attempts` en 0 en vez de 5, porque cada incremento se
+    // revertía). Al devolver un booleano en vez de lanzar, la transacción
+    // siempre hace COMMIT (haya sido éxito o rechazo) y el
+    // BadRequestException se lanza recién después, fuera de la transacción
+    // — así el incremento de `attempts` persiste igual que antes del fix.
+    const failed = await this.passwordResetTokenRepository.manager.transaction(
+      async (manager) => {
+        const token = await manager.findOne(PasswordResetToken, {
+          where: { usuarioId: usuario.id, usedAt: IsNull() },
+          order: { createdAt: 'DESC' },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!token) {
+          return true;
+        }
+
+        if (token.attempts >= PASSWORD_RESET_MAX_ATTEMPTS) {
+          return true;
+        }
+
+        if (token.expiresAt.getTime() <= Date.now()) {
+          return true;
+        }
+
+        if (this.hashOpaqueToken(dto.code) !== token.codeHash) {
+          token.attempts += 1;
+          await manager.save(token);
+          return true;
+        }
+
+        usuario.passwordHash = newPasswordHash;
+        await manager.save(usuario);
+
+        token.usedAt = new Date();
+        await manager.save(token);
+
+        await manager.update(
+          RefreshToken,
+          { usuarioId: usuario.id, revokedAt: IsNull() },
+          { revokedAt: new Date() },
+        );
+        return false;
+      },
+    );
+
+    if (failed) {
+      throw new BadRequestException(INVALID_RESET_CODE_MESSAGE);
+    }
+  }
+
+  private generatePasswordResetCode(): string {
+    return randomInt(0, 1_000_000).toString().padStart(6, '0');
   }
 
   private toUserResponse(usuario: Usuario): UserResponse {

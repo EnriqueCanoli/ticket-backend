@@ -14,6 +14,7 @@ import { Producto } from './productos/entities/producto.entity';
 import { Ticket } from './tickets/entities/ticket.entity';
 import { TicketItem } from './tickets/entities/ticket-item.entity';
 import { RefreshToken } from './auth/entities/refresh-token.entity';
+import { PasswordResetToken } from './auth/entities/password-reset-token.entity';
 
 @Module({
   imports: [
@@ -40,7 +41,14 @@ import { RefreshToken } from './auth/entities/refresh-token.entity';
         username: configService.get<string>('DB_USERNAME'),
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_NAME'),
-        entities: [Usuario, Producto, Ticket, TicketItem, RefreshToken],
+        entities: [
+          Usuario,
+          Producto,
+          Ticket,
+          TicketItem,
+          RefreshToken,
+          PasswordResetToken,
+        ],
         synchronize: false,
         uuidExtension: 'pgcrypto',
         ssl:
