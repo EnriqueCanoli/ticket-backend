@@ -56,6 +56,17 @@ export class Usuario {
   @Column({ name: 'acepto_terminos', type: 'boolean' })
   aceptoTerminos: boolean;
 
+  /**
+   * Versión de los access tokens del usuario. Cada access token lleva este
+   * valor en el claim `tv`; JwtStrategy.validate() rechaza con 401 los que no
+   * coinciden. resetPassword() la incrementa de forma atómica (SQL
+   * `"token_version" + 1`), lo que invalida de inmediato todos los access
+   * tokens emitidos antes del cambio de contraseña. Nunca se expone en
+   * respuestas HTTP (ver migración AddTokenVersionToUsuarios).
+   */
+  @Column({ name: 'token_version', type: 'int', default: 0 })
+  tokenVersion: number;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

@@ -7,14 +7,16 @@
 
 Backend de una app móvil de punto de venta para negocios pequeños en México (ej. tienda de mascotas/
 abarrotes): gestiona un catálogo de productos privado por cuenta, ventas ("tickets") y reportes de
-ventas/ganancias. Incluye login/registro con JWT + refresh tokens y un PIN de 4 dígitos que el
-backend solo expone — nunca valida. Este repo es solo el backend (NestJS + Postgres); el frontend
+ventas/ganancias. Incluye login/registro con JWT + refresh tokens, recuperación de contraseña con un
+código de 6 dígitos enviado por email (`forgot-password`/`reset-password`) y un PIN de 4 dígitos que
+el backend expone y permite regenerar reingresando la contraseña, pero nunca valida. Este repo es solo el backend (NestJS + Postgres); el frontend
 (Expo/React Native) vive en `c:\dev\ticket`.
 
 ## 2. Estructura de carpetas
 
 - `src/auth/` — registro, login, JWT, refresh tokens (rotación + detección de reuso), logout, `/me`,
-  `/me/pin`. Ver `src/auth/README.md` (incluye también la documentación de la entidad `Usuario`, ver
+  `/me/pin`, `POST /me/pin/regenerate`, y recuperación de contraseña (`POST /auth/forgot-password`,
+  `POST /auth/reset-password`, envío por Brevo en `mail.service.ts`). Ver `src/auth/README.md` (incluye también la documentación de la entidad `Usuario`, ver
   más abajo).
 - `src/productos/` — catálogo de productos por cuenta (`usuario_id`), búsqueda, alta/edición/
   soft-delete, `costo_validado`. Ver `src/productos/README.md`.
@@ -34,14 +36,22 @@ backend solo expone — nunca valida. Este repo es solo el backend (NestJS + Pos
   - La conexión en runtime vive en `src/app.module.ts` (`TypeOrmModule.forRootAsync`), vía
     `ConfigService`. Reusa las mismas variables de entorno que `data-source.ts` (no las credenciales
     hardcodeadas ni el código de config en sí).
-  - `migrations/` — 12 migraciones, única fuente de verdad del schema (`synchronize: false` en
+  - `migrations/` — 14 migraciones (las dos últimas, `1787690000000-AddTokenVersionToUsuarios.ts` y
+    `1787700000000-AddUniqueActivePasswordResetTokenPerUsuario.ts`), única fuente de verdad del schema (`synchronize: false` en
     ambas configs). Convención de nombre: `<timestamp-ms>-<DescripciónPascalCase>.ts` (ej.
     `1786831831517-InitialSchema.ts`, `1786860000000-RenamePinHashToPinInUsuarios.ts`).
   - `transformers/numeric.transformer.ts` — transformer TypeORM para columnas `numeric` ↔ `number`
     de JS.
 - `src/main.ts` — bootstrap: `ValidationPipe` global (`whitelist: true, forbidNonWhitelisted: true`,
-  **sin `transform`**, ver §3), sin CORS configurado, sin prefijo global de rutas, puerto vía
-  `process.env.PORT ?? 3000`.
+  **sin `transform`**, ver §3), límite explícito de tamaño de body de 1 MB (tres `app.useBodyParser`
+  — json/urlencoded/catch-all — en vez de confiar en el default implícito de body-parser, que además
+  no aplica ningún límite si el `Content-Type` no matchea json/urlencoded), un `HttpErrorsFilter`
+  global que normaliza los 413/415 que lanza body-parser al mismo formato `{statusCode, message,
+  error}` que ya usa el resto de los 4xx de la API, sin CORS configurado, sin prefijo global de
+  rutas, puerto vía `process.env.PORT ?? 3000`. Toda esta configuración vive en `configureApp()`
+  (exportada), separada de `bootstrap()` para poder reusarla desde tests e2e que arman la app fuera
+  del builder de testing default de Nest (ver `test/body-limit.e2e-spec.ts`, §5) — ese builder nunca
+  pasa por `bootstrap()`.
 - `src/app.module.ts` — importa `ConfigModule` (global), `ThrottlerModule.forRoot` (60 req/60s,
   único guard global vía `APP_GUARD` → `ThrottlerGuard`), `TypeOrmModule.forRootAsync`
   (`synchronize: false`, entidades listadas explícitas, `uuidExtension: 'pgcrypto'`, SSL condicional
@@ -54,7 +64,10 @@ backend solo expone — nunca valida. Este repo es solo el backend (NestJS + Pos
   `strictBindCallApply: false`; sin alias de paths), `tsconfig.build.json`, `nest-cli.json`
   (`sourceRoot: src`, `deleteOutDir: true`, resto default), `eslint.config.mjs` (flat config),
   `.prettierrc`, `.env`/`.env.example` (ver §5). `README.md` en la raíz es el boilerplate default de
-  `nest new` — no forma parte de este mapa, no tocar salvo instrucción explícita.
+  `nest new` — no forma parte de este mapa, no tocar salvo instrucción explícita. `API generar nuevo
+  PIN.md` (raíz) es un documento de contrato de API suelto para `POST /me/pin/regenerate`,
+  referenciado desde `src/auth/README.md` — no es el patrón general (un contrato de API nuevo
+  normalmente se integra directo en el `README.md` del módulo), es detalle puntual de ese endpoint.
 
 ## 3. Decisiones de diseño ya tomadas
 
@@ -95,9 +108,44 @@ discutirlo explícitamente**:
   entender que rompe la mitigación.
 - **`ValidationPipe` global sin `transform: true`** (solo `whitelist: true, forbidNonWhitelisted:
   true`) — la coacción de tipos y la normalización se hacen a mano: `ParseIntPipe`/`ParseUUIDPipe`
-  explícitos por parámetro en vez de DTOs con `@Type()`, y normalización manual de `email`
-  (`trim().toLowerCase()`) dentro de los services (`auth.service.ts`), no vía `@Transform()` en los
-  DTOs (que no se aplicaría sin `transform: true`).
+  explícitos por parámetro en vez de DTOs con `@Type()` para valores primitivos de `@Param()`/
+  `@Query()`. Para el **body** (DTOs de clase) la conclusión es distinta de lo que decía antes este
+  mapa: un `@Transform()` de `class-transformer` en un DTO **sí llega a aplicarse** al valor final
+  que recibe el controller/service pese a `transform: true` estar apagado — `whitelist: true` +
+  `forbidNonWhitelisted: true` hacen que `ValidationPipe.transform()` devuelva `classToPlain(entity)`
+  (la instancia ya transformada) en vez del objeto plano original (ver
+  `@nestjs/common/pipes/validation.pipe.js`; confirmado en `src/auth/dto/transforms.ts`, que lo
+  verifica instanciando el `ValidationPipe` real del proyecto). `auth/` ya aprovecha esto para
+  normalizar `email` (`@Transform(trimAndLowercase)` en los 4 DTOs que lo reciben) y mantiene además
+  el `trim().toLowerCase()` manual en `auth.service.ts` como defensa redundante e inofensiva para un
+  caller que construya el DTO a mano sin pasar por el pipe HTTP, no porque haga falta. No asuma que
+  `productos`/`tickets`/`reportes` ya aprovechan este mecanismo — siguen normalizando a mano en sus
+  services; verificar caso por caso antes de asumir.
+- **Invalidación inmediata de access tokens tras un reset de contraseña, por `token_version`**:
+  `usuarios.token_version` (entero, `DEFAULT 0`) viaja en el claim `tv` de cada access token.
+  `JwtStrategy.validate()` delega en `AuthService.validateAccessTokenPayload()`, que responde 401 si
+  `(payload.tv ?? 0) !== usuario.tokenVersion`. `resetPassword()` incrementa la columna en SQL
+  (`"token_version" + 1`) en la misma transacción en que cambia `password_hash` y revoca todos los
+  refresh tokens. Se eligió un contador y no `password_changed_at` comparado con `iat` porque `iat`
+  tiene precisión de segundos (no hay umbral correcto para un token y un reset en el mismo segundo) y
+  el contador no depende de relojes. Los tokens previos al claim (sin `tv`) se leen como 0: el
+  despliegue no cerró sesiones. Costo: cero consultas extra (`validate()` ya leía al usuario).
+- **Escrituras parciales sobre `usuarios` en `resetPassword()` y `regeneratePin()`**: nunca
+  `save()` de la entidad completa, porque ambas parten de una entidad leída antes y un `save()`
+  reescribiría todas las columnas (un reset podía revertir un `pin` recién regenerado y viceversa).
+  `resetPassword()` usa `manager.update(Usuario, { id }, { passwordHash, tokenVersion })`;
+  `regeneratePin()` usa `update({ id, passwordHash: <el verificado> }, { pin })` y, si
+  `affected === 0` (un reset concurrente cambió la contraseña), responde el mismo 400
+  `"Contraseña incorrecta"`. Ver `src/auth/README.md`.
+- **`forgotPassword()` es atómico frente a llamadas concurrentes (antes BE-03, corregido)**: borra
+  el/los token(s) de reset previos e inserta el nuevo dentro de una transacción con
+  `SELECT ... FOR UPDATE` (lock `pessimistic_write`) sobre la fila de `usuarios` — mismo patrón que
+  ya usaba `resetPassword()` sobre la fila del token vigente. El índice único parcial
+  `UQ_password_reset_tokens_usuario_id_vigente` (migración
+  `AddUniqueActivePasswordResetTokenPerUsuario`) es defensa de BD adicional para el mismo invariante
+  (a lo sumo un `password_reset_token` vigente por usuario). Riesgo residual documentado y no
+  corregido: `refresh()` no es transaccional frente al mismo tipo de condición de carrera. Ver
+  `src/auth/README.md` sección 3.
 - **`synchronize: false` en ambas configuraciones de TypeORM** (runtime en `app.module.ts` y CLI en
   `database/data-source.ts`) — el schema real vive solo en `src/database/migrations/`, nunca se
   infiere de los decoradores de las entidades en runtime.
@@ -114,10 +162,12 @@ discutirlo explícitamente**:
 - **La lógica de negocio vive en el `*.service.ts`**, nunca en el controller (los controllers solo
   resuelven guards/params y delegan) ni en las entidades (que son solo definición de columnas/
   relaciones TypeORM, sin métodos de negocio).
-- **Los DTOs son la única capa de validación de shape/tipo del input** (`class-validator`), pero
-  dado que `transform: true` está deshabilitado (§3), no asumas que un DTO coacciona tipos
-  automáticamente — verificá si el controller usa un pipe explícito (`ParseIntPipe`,
-  `ParseUUIDPipe`) o si el service normaliza a mano.
+- **Los DTOs son la única capa de validación de shape/tipo del input** (`class-validator`). Para
+  parámetros/query primitivos, `transform: true` sigue deshabilitado (§3) y la coacción de tipos se
+  hace a mano con un pipe explícito (`ParseIntPipe`, `ParseUUIDPipe`) o en el service — no asumas
+  que un DTO la hace por vos ahí. Para el **body**, en cambio, un `@Transform()` en el DTO sí se
+  aplica al valor final aunque `transform: true` esté apagado (matiz corregido en §3); no asumas cuál
+  de los dos casos aplica sin mirar el DTO y el controller reales.
 - **Migraciones**: nombre `<timestamp-ms>-<DescripciónPascalCase>.ts` en `src/database/migrations/`,
   corridas con el CLI de TypeORM apuntando a `src/database/data-source.ts` (no hay script npm
   dedicado, ver §5). Cada cambio de schema es una migración nueva — nunca se edita una migración ya
@@ -136,7 +186,9 @@ discutirlo explícitamente**:
 - **Migraciones**: no hay script npm dedicado — se corren con el CLI de TypeORM contra
   `src/database/data-source.ts`, ej. `npx typeorm-ts-node-commonjs -d src/database/data-source.ts
   migration:run` (mismo binario para `migration:generate`/`migration:revert`).
-- **Lint**: `npm run lint` (`eslint ... --fix`). **Format**: `npm run format` (prettier).
+- **Lint**: `npm run lint` ejecuta `eslint ... --fix`, es decir, **modifica archivos**. Para revisar
+  sin modificar nada, use `npx eslint "src/**/*.ts"`. **Format**: `npm run format` (prettier).
+  **Tipos**: `npx tsc --noEmit -p tsconfig.json`.
 - **Variables de entorno esperadas** (solo nombres — confirmar valores reales en `.env`, nunca
   commitear el archivo):
   - `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME` — conexión Postgres, usadas por
@@ -156,10 +208,24 @@ discutirlo explícitamente**:
   - `PASSWORD_RESET_CODE_TTL_SECONDS` — opcional, default `900`s (15 min) — vida útil del código de
     6 dígitos de "olvidé mi contraseña".
 - **Tests**: sí hay suite configurada (Jest, config embebida en `package.json`, sin
-  `jest.config.*` separado). `npm test` corre specs unitarios (`*.spec.ts` dentro de `src/`), `npm
-  run test:e2e` corre `test/app.e2e-spec.ts` (config `test/jest-e2e.json`), `npm run test:cov` para
-  cobertura. **Cobertura real es baja**: de los módulos de dominio, solo `reportes/` tiene specs
-  (`reportes.controller.spec.ts`, `reportes.service.spec.ts` — incluyen un test de regresión
-  dedicado al manejo de timezone en SQL, ver `src/reportes/README.md`); `auth/`, `productos/`,
-  `tickets/`, `usuarios/` no tienen specs propios. No asumir cobertura de tests al modificar esos
-  módulos — verificar manualmente o agregar specs si el cambio lo amerita.
+  `jest.config.*` separado). `npm test` corre specs unitarios (`*.spec.ts` dentro de `src/`); `npm
+  run test:e2e` corre **todo** `test/*.e2e-spec.ts` (config `test/jest-e2e.json`, `testRegex:
+  '.e2e-spec.ts$'` — ya no es solo `app.e2e-spec.ts`: también `body-limit.e2e-spec.ts` y
+  `forgot-password.e2e-spec.ts`); `npm run test:cov` para cobertura. Los specs unitarios no usan base
+  de datos: mockean los repositorios y construyen el service directamente. Los e2e sí levantan
+  `AppModule` completo con conexión real a Postgres (nada mockeado) — hace falta un `.env` válido
+  para correrlos. `body-limit.e2e-spec.ts` arma la app con `NestFactory.create()` + `configureApp()`
+  (la misma función exportada de `src/main.ts`, ver §2) en vez del builder de testing default de
+  Nest, justamente porque ese builder nunca pasa por `bootstrap()`/`configureApp()`.
+  `forgot-password.e2e-spec.ts` reproduce la condición de carrera BE-03 con 3 llamadas concurrentes
+  reales contra la BD. **La cobertura real es baja**: `reportes/` tiene
+  `reportes.controller.spec.ts` y `reportes.service.spec.ts` (incluyen un test de regresión del
+  manejo de timezone en SQL, ver `src/reportes/README.md`); `auth/` tiene
+  `auth.service.spec.ts` (`regeneratePin`, `resetPassword`, claim `tv` en login/register),
+  `strategies/jwt.strategy.spec.ts` (comparación de `tv` contra `token_version`),
+  `dto/recovery-dtos.spec.ts` (mensajes de validación en español de `ForgotPasswordDto`/
+  `ResetPasswordDto`/`RegeneratePinDto`) y `dto/login-register-dtos.spec.ts` (normalización de
+  `email` en `LoginDto`/
+  `RegisterDto`). `productos/`, `tickets/` y `usuarios/` no tienen specs propios, y en `auth/` no hay
+  specs unitarios de `refresh()`/`logout()`. No asuma cobertura de tests al modificar esas partes:
+  verifique manualmente o agregue specs si el cambio lo amerita.

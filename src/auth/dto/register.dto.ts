@@ -1,5 +1,7 @@
 import { Equals, IsBoolean, IsEmail, Matches } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { MaxBcryptBytes } from '../validators/max-bcrypt-bytes.validator';
+import { trimAndLowercase } from './transforms';
 
 /**
  * AUTH_ENDPOINTS.md sección 3 (POST /auth/register). Reglas tomadas de
@@ -18,6 +20,7 @@ import { MaxBcryptBytes } from '../validators/max-bcrypt-bytes.validator';
  * ValidationPipe global, un `undefined` llega tal cual al validador).
  */
 export class RegisterDto {
+  @Transform(trimAndLowercase)
   @IsEmail()
   email: string;
 

@@ -23,9 +23,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload): Promise<Usuario> {
-    // 401 si el usuario del payload ya no existe (AUTH_ENDPOINTS.md sección 3, GET /me).
+    // 401 si el usuario del payload ya no existe, o si el claim `tv` no
+    // coincide con usuarios.token_version (token emitido antes de un reset
+    // de contraseña). La lógica vive en AuthService.validateAccessTokenPayload().
     try {
-      return await this.authService.validateUserById(payload.sub);
+      return await this.authService.validateAccessTokenPayload(payload);
     } catch {
       throw new UnauthorizedException();
     }

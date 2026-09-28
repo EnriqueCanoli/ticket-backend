@@ -14,6 +14,7 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { RegeneratePinDto } from './dto/regenerate-pin.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { Usuario } from '../usuarios/entities/usuario.entity';
@@ -93,6 +94,21 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   mePin(@CurrentUser() usuario: Usuario): PinResponse {
     return this.authService.toPinResponse(usuario);
+  }
+
+  // Mismo límite que /auth/login (5 req/min por IP): ambos verifican una
+  // contraseña contra un hash bcrypt, misma naturaleza anti-fuerza-bruta,
+  // aunque acá el atacante ya necesitaría un access token válido robado para
+  // siquiera intentarlo.
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('me/pin/regenerate')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  regeneratePin(
+    @Body() dto: RegeneratePinDto,
+    @CurrentUser() usuario: Usuario,
+  ): Promise<PinResponse> {
+    return this.authService.regeneratePin(usuario, dto);
   }
 
   @Throttle({ default: { limit: 3, ttl: 900000 } })

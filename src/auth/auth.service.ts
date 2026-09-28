@@ -19,6 +19,7 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { RegeneratePinDto } from './dto/regenerate-pin.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 import {
   AuthResponse,
@@ -132,12 +133,12 @@ export class AuthService {
   }
 
   async register(dto: RegisterDto): Promise<AuthResponse> {
-    // Normalizado acá (no en el DTO): el ValidationPipe global no usa
-    // `transform: true`, así que un @Transform() en el DTO no llegaría a
-    // aplicarse sobre el objeto que recibe este método (mismo motivo por el
-    // que ProductosService.search() hace `search.trim()` acá y no en su DTO).
-    // Sin esto, "Juan@gmail.com" y "juan@gmail.com" se tratarían como cuentas
-    // distintas.
+    // Normalización redundante con el @Transform de RegisterDto (BE-04): el
+    // DTO ya llega con `email` trimeado/en minúsculas desde el
+    // ValidationPipe, pero se repite acá como defensa adicional inofensiva
+    // (idempotente) para cualquier caller que construya el DTO a mano sin
+    // pasar por el pipe HTTP. Sin esto, "Juan@gmail.com" y "juan@gmail.com"
+    // se tratarían como cuentas distintas.
     const email = dto.email.trim().toLowerCase();
 
     const existing = await this.usuarioRepository.findOne({
@@ -156,6 +157,9 @@ export class AuthService {
       phone: dto.phone,
       pin,
       aceptoTerminos: dto.aceptoTerminos,
+      // Explícito (igual al DEFAULT 0 de la columna): create() no aplica los
+      // defaults de BD, y issueTokenPair() firma el claim `tv` con este valor.
+      tokenVersion: 0,
     });
     try {
       await this.usuarioRepository.save(usuario);
@@ -199,8 +203,8 @@ export class AuthService {
   }
 
   async login(dto: LoginDto): Promise<AuthResponse> {
-    // Mismo motivo que register(): normalizado acá porque el DTO no pasa por
-    // transform (ver comentario de register()).
+    // Mismo motivo que register(): normalización redundante con el
+    // @Transform de LoginDto, ver comentario de register().
     const email = dto.email.trim().toLowerCase();
 
     const usuario = await this.usuarioRepository.findOne({
@@ -310,6 +314,24 @@ export class AuthService {
     return usuario;
   }
 
+  /**
+   * Validación completa del payload de un access token, usada por
+   * JwtStrategy.validate(): el usuario debe existir y el claim `tv` debe
+   * coincidir con `usuarios.token_version`. Tras un reset de contraseña
+   * exitoso, resetPassword() incrementa `token_version`, así que todo access
+   * token emitido antes del reset responde 401 de inmediato, sin esperar a
+   * que venza. Los tokens emitidos antes de existir el claim `tv` se leen
+   * como 0 (igual al DEFAULT de la columna), por eso siguen valiendo
+   * mientras el usuario no haya hecho ningún reset.
+   */
+  async validateAccessTokenPayload(payload: JwtPayload): Promise<Usuario> {
+    const usuario = await this.validateUserById(payload.sub);
+    if ((payload.tv ?? 0) !== usuario.tokenVersion) {
+      throw new UnauthorizedException();
+    }
+    return usuario;
+  }
+
   toMeResponse(usuario: Usuario): MeResponse {
     return {
       ...this.toUserResponse(usuario),
@@ -321,6 +343,53 @@ export class AuthService {
     return { pin: usuario.pin };
   }
 
+  /**
+   * POST /me/pin/regenerate. A diferencia de login(), acá el usuario ya está
+   * autenticado e identificado (JwtAuthGuard + @CurrentUser()), así que no
+   * aplica el patrón DUMMY_PASSWORD_HASH — ese truco existe para no filtrar
+   * por temporización si un EMAIL existe cuando el llamante es anónimo, y acá
+   * no hay ningún email de por medio.
+   *
+   * Password incorrecto → 400 (BadRequestException), nunca 401: un 401 en un
+   * endpoint autenticado dispara en el cliente (authenticatedRequest(),
+   * src/shared/api/auth.ts del frontend) un intento de refresh + reintento
+   * automático, pensado para "mi access token venció" — no para "tipeé mal mi
+   * contraseña". Usar 401 acá gatillaría una rotación real e innecesaria del
+   * refresh token en cada intento fallido.
+   *
+   * Escritura parcial y condicionada: solo toca `pin`, y solo si
+   * `password_hash` sigue siendo el que se acaba de verificar. `usuario` es
+   * la entidad que JwtStrategy leyó al inicio de la request; un save() de la
+   * entidad completa escribiría también ese `password_hash` leído antes y
+   * podría revertir el que un POST /auth/reset-password concurrente acaba de
+   * cambiar. Si el reset ganó la carrera (`affected === 0`), la contraseña
+   * verificada ya no es la vigente: se responde el mismo 400.
+   */
+  async regeneratePin(
+    usuario: Usuario,
+    dto: RegeneratePinDto,
+  ): Promise<PinResponse> {
+    const passwordMatches = await bcrypt.compare(
+      dto.password,
+      usuario.passwordHash,
+    );
+    if (!passwordMatches) {
+      throw new BadRequestException('Contraseña incorrecta');
+    }
+
+    const nuevoPin = this.generatePin();
+    const result = await this.usuarioRepository.update(
+      { id: usuario.id, passwordHash: usuario.passwordHash },
+      { pin: nuevoPin },
+    );
+    if (!result.affected) {
+      throw new BadRequestException('Contraseña incorrecta');
+    }
+
+    usuario.pin = nuevoPin;
+    return { pin: nuevoPin };
+  }
+
   async forgotPassword(dto: ForgotPasswordDto): Promise<{ message: string }> {
     const email = dto.email.trim().toLowerCase();
     const usuario = await this.usuarioRepository.findOne({
@@ -328,24 +397,57 @@ export class AuthService {
     });
 
     if (usuario) {
-      await this.passwordResetTokenRepository.delete({
-        usuarioId: usuario.id,
-      });
-
       const code = this.generatePasswordResetCode();
-      const token = this.passwordResetTokenRepository.create({
-        usuarioId: usuario.id,
-        codeHash: this.hashOpaqueToken(code),
-        expiresAt: new Date(Date.now() + this.passwordResetCodeTtlMs),
-      });
-      await this.passwordResetTokenRepository.save(token);
+      const codeHash = this.hashOpaqueToken(code);
+      const expiresAt = new Date(Date.now() + this.passwordResetCodeTtlMs);
 
-      // Fire-and-forget: no se espera la respuesta del proveedor de correo
-      // para no acoplar el tiempo de esta request a él, y sobre todo para no
-      // filtrar por temporización si el email existe (a diferencia de
-      // login(), acá no aplica el truco de DUMMY_PASSWORD_HASH porque no hay
-      // bcrypt.compare de por medio — la asimetría real es "generar/guardar/
-      // enviar" vs. "no hacer nada").
+      // Borrar el/los token(s) previos + insertar el nuevo va dentro de una
+      // transacción con SELECT ... FOR UPDATE (lock: pessimistic_write)
+      // sobre la fila de `usuarios` — mismo patrón que resetPassword() usa
+      // sobre la fila del token (ver comentario ahí). Se bloquea la fila de
+      // `usuarios` y no la de `password_reset_tokens` porque esta última
+      // puede no existir todavía (primer pedido de este usuario, o si el
+      // token previo ya fue usado/expiró) y no se puede hacer
+      // `SELECT ... FOR UPDATE` sobre una fila inexistente; la fila de
+      // `usuarios` sí existe siempre (ya se confirmó arriba con el findOne).
+      //
+      // Sin este lock (BE-03), dos o más llamadas concurrentes a este método
+      // para el mismo usuario intercalaban DELETE (0 filas cada una, porque
+      // en READ COMMITTED cada DELETE ve una foto tomada antes de que las
+      // demás hicieran commit — ninguna ve las filas insertadas por las
+      // otras) + INSERT de cada una, dejando 2+ filas vigentes en vez de 1
+      // (reproducido 4/5 y 3/3 con 3 requests en paralelo real). Con el
+      // lock, una segunda llamada concurrente queda bloqueada hasta que la
+      // primera haga commit; al desbloquearse, su propio DELETE ya ve (y
+      // borra) la fila que la primera acaba de insertar, antes de insertar
+      // la suya — como máximo queda 1 fila vigente al final.
+      //
+      // El índice único parcial `UQ_password_reset_tokens_usuario_id_vigente`
+      // (migración AddUniqueActivePasswordResetTokenPerUsuario) es la
+      // defensa de BD en profundidad para el mismo invariante, por si algún
+      // camino futuro reintrodujera un check-then-act sin este lock.
+      await this.usuarioRepository.manager.transaction(async (manager) => {
+        await manager.findOne(Usuario, {
+          where: { id: usuario.id },
+          lock: { mode: 'pessimistic_write' },
+        });
+
+        await manager.delete(PasswordResetToken, { usuarioId: usuario.id });
+
+        const token = manager.create(PasswordResetToken, {
+          usuarioId: usuario.id,
+          codeHash,
+          expiresAt,
+        });
+        await manager.save(token);
+      });
+
+      // Fire-and-forget, fuera de la transacción: no se espera la respuesta
+      // del proveedor de correo para no acoplar el tiempo de esta request a
+      // él, y sobre todo para no filtrar por temporización si el email
+      // existe (a diferencia de login(), acá no aplica el truco de
+      // DUMMY_PASSWORD_HASH porque no hay bcrypt.compare de por medio — la
+      // asimetría real es "generar/guardar/enviar" vs. "no hacer nada").
       this.mailService.sendPasswordResetCode(email, code).catch((err) => {
         this.logger.error('Error enviando código de reset', err);
       });
@@ -393,9 +495,17 @@ export class AuthService {
     // — así el incremento de `attempts` persiste igual que antes del fix.
     const failed = await this.passwordResetTokenRepository.manager.transaction(
       async (manager) => {
+        // Desempate estable por `id` además de `createdAt`: dos filas
+        // vigentes del mismo usuario pueden compartir `created_at` (BE-03,
+        // ya cerrado por el lock de forgotPassword() + el índice único
+        // parcial de la migración AddUniqueActivePasswordResetTokenPerUsuario
+        // — hoy ese caso debería ser inalcanzable), y sin un segundo campo de
+        // orden Postgres no garantiza qué fila devuelve primero un ORDER BY
+        // con empates. Esto no cambia nada cuando hay una sola fila vigente
+        // (el caso normal).
         const token = await manager.findOne(PasswordResetToken, {
           where: { usuarioId: usuario.id, usedAt: IsNull() },
-          order: { createdAt: 'DESC' },
+          order: { createdAt: 'DESC', id: 'DESC' },
           lock: { mode: 'pessimistic_write' },
         });
         if (!token) {
@@ -416,8 +526,22 @@ export class AuthService {
           return true;
         }
 
-        usuario.passwordHash = newPasswordHash;
-        await manager.save(usuario);
+        // Escritura parcial con update() en vez de save(usuario): `usuario`
+        // se leyó antes de la transacción, y save() escribiría todas sus
+        // columnas, con lo que podría revertir un `pin` regenerado entre
+        // esa lectura y este punto. `token_version` se incrementa en SQL
+        // ("token_version" + 1), no en JS, para que sea atómico: invalida
+        // de inmediato todos los access tokens emitidos antes del reset
+        // (claim `tv`, ver JwtStrategy). `updated_at` lo sigue fijando
+        // TypeORM (@UpdateDateColumn → CURRENT_TIMESTAMP en el UPDATE).
+        await manager.update(
+          Usuario,
+          { id: usuario.id },
+          {
+            passwordHash: newPasswordHash,
+            tokenVersion: () => '"token_version" + 1',
+          },
+        );
 
         token.usedAt = new Date();
         await manager.save(token);
@@ -465,7 +589,14 @@ export class AuthService {
   private async issueTokenPair(
     usuario: Usuario,
   ): Promise<TokenPairResponse & { refreshTokenEntity: RefreshToken }> {
-    const payload: JwtPayload = { sub: usuario.id, email: usuario.email };
+    // `tv`: token_version vigente del usuario. Todas las rutas que llegan
+    // acá (register, login y refresh con la relación `usuario` cargada)
+    // traen la entidad recién leída de la BD o recién creada con valor 0.
+    const payload: JwtPayload = {
+      sub: usuario.id,
+      email: usuario.email,
+      tv: usuario.tokenVersion,
+    };
     const accessToken = await this.jwtService.signAsync(payload, {
       expiresIn: this.accessTokenTtlSeconds,
     });

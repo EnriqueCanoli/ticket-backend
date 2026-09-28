@@ -1,8 +1,11 @@
 import { IsEmail, Matches } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { MaxBcryptBytes } from '../validators/max-bcrypt-bytes.validator';
+import { trimAndLowercase } from './transforms';
 
 /** AUTH_ENDPOINTS.md sección 3 (POST /auth/login). Mismas reglas de formato que RegisterDto. */
 export class LoginDto {
+  @Transform(trimAndLowercase)
   @IsEmail()
   email: string;
 
