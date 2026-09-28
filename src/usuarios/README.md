@@ -23,9 +23,9 @@ src/usuarios/
 
 Nada más. No hay `usuarios.module.ts` — la entidad se registra directamente en dos lugares:
 
-- `app.module.ts` → `TypeOrmModule.forRootAsync({ ..., entities: [Usuario, Producto, Ticket, TicketItem, RefreshToken] })` (config raíz de conexión).
-- `src/auth/auth.module.ts` → `TypeOrmModule.forFeature([Usuario, RefreshToken])` — esto es lo único
-  que le da a `AuthService` un `Repository<Usuario>` inyectable.
+- `app.module.ts` → `TypeOrmModule.forRootAsync({ ..., entities: [Usuario, Producto, Ticket, TicketItem, RefreshToken, PasswordResetToken] })` (config raíz de conexión).
+- `src/auth/auth.module.ts` → `TypeOrmModule.forFeature([Usuario, RefreshToken, PasswordResetToken])`
+  — esto es lo único que le da a `AuthService` un `Repository<Usuario>` inyectable.
 - También listada en `src/database/data-source.ts` (entities del datasource que usa el CLI de
   migraciones).
 
@@ -41,6 +41,7 @@ Nada más. No hay `usuarios.module.ts` — la entidad se registra directamente e
 | `phone` / `phone` | `varchar(10)`, `unique: true` | NOT NULL | Acá el decorador sí coincide con la constraint real (unique simple) |
 | `pin` / `pin` | `varchar(4)` | NOT NULL | Texto plano, sin `unique` — dos cuentas pueden compartir PIN. Ver decisión de producto en `auth/README.md` §5 |
 | `aceptoTerminos` / `acepto_terminos` | `boolean` | NOT NULL | Sin default en el decorador (`synchronize: false`; el `DEFAULT false` vive solo en la migración) |
+| `tokenVersion` / `token_version` | `integer` | NOT NULL, `DEFAULT 0` | Versión de los access tokens: viaja en el claim `tv` del JWT y `JwtStrategy` rechaza con 401 los que no coinciden. Solo `resetPassword()` la incrementa (en SQL, `"token_version" + 1`), lo que invalida de inmediato los access tokens previos al reset. Nunca se expone en respuestas HTTP. Ver `auth/README.md` §3 |
 | `createdAt` / `created_at` | `timestamptz`, `@CreateDateColumn` | NOT NULL | |
 | `updatedAt` / `updated_at` | `timestamptz`, `@UpdateDateColumn` | NOT NULL | |
 
@@ -66,6 +67,9 @@ Historia de `usuarios` a través de las migraciones, en orden:
 4. `AddUniquePhoneToUsuarios` — agrega `UQ_usuarios_phone`.
 5. `AddAceptoTerminosToUsuarios` — agrega la columna, sin backfill especial (filas viejas quedan en
    `false`).
+6. `AddTokenVersionToUsuarios` (`1787690000000`) — agrega `token_version integer NOT NULL DEFAULT
+   0`. Sin backfill: las filas existentes quedan en 0, que coincide con los access tokens emitidos
+   antes del claim `tv` (se leen como 0), así que el despliegue no cierra sesiones.
 
 **Constraints finales sobre `usuarios`**: `PK_usuarios(id)`, `UQ_usuarios_email_lower(LOWER(email))`,
 `UQ_usuarios_phone(phone)`. Sin constraint sobre `pin` (intencional).
@@ -80,16 +84,20 @@ No hay endpoint de borrado de cuenta hoy (ni controller en `usuarios/` ni métod
 | `tickets.usuario_id → usuarios.id` | **sin especificar → default Postgres `NO ACTION`** | `IDX_tickets_usuario_id` |
 | `productos.usuario_id → usuarios.id` | **sin especificar → default `NO ACTION`** | `IDX_productos_usuario_id` |
 | `refresh_tokens.usuario_id → usuarios.id` | **`ON DELETE CASCADE`** | `IDX_refresh_tokens_usuario_id` |
+| `password_reset_tokens.usuario_id → usuarios.id` (`FK_password_reset_tokens_usuario_id`) | **`ON DELETE CASCADE`** | `IDX_password_reset_tokens_usuario_id` |
 
 El modelo queda asimétrico a propósito por consecuencia del diseño (no hay comentario explícito que
-lo declare, pero se deduce): las sesiones (`refresh_tokens`) son desechables y se borran en cascada,
+lo declare, pero se deduce): las sesiones (`refresh_tokens`) y los códigos de recuperación
+(`password_reset_tokens`) son desechables y se borran en cascada,
 mientras que catálogo (`productos`) y ventas (`tickets`) quedan protegidos — un `DELETE FROM
 usuarios` fallaría por violación de FK mientras el usuario tenga productos o tickets asociados.
 
 ## 5. Quién usa `Usuario`
 
 - **`auth`** — único consumidor con acceso real de datos (`Repository<Usuario>` vía
-  `TypeOrmModule.forFeature`). Toda la lógica de login/registro/perfil/PIN vive ahí.
+  `TypeOrmModule.forFeature`). Toda la lógica de login/registro/perfil/PIN/recuperación de
+  contraseña vive ahí. `resetPassword()` y `regeneratePin()` escriben con `update()` parcial, nunca
+  `save()` de la entidad completa (ver `auth/README.md` §5).
 - **`productos`** — relación `@ManyToOne` hacia `Usuario` en `Producto` (catálogo privado por
   cuenta vía `usuario_id`), sin repository propio sobre `Usuario`.
 - **`tickets`** — misma relación `@ManyToOne` en `Ticket`, sin repository propio.

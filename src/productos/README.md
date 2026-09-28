@@ -57,8 +57,10 @@ rutas con `:id`.
 - Lógica: `costo_validado = (dto.costo !== undefined)` — chequeo **estricto**, no truthy (`costo: 0`
   cuenta como presente → `costo_validado: true, costo: 0`). Si no viene `costo`: se persiste el
   placeholder `costo = 1`, `costo_validado = false`. `es_a_granel = dto.es_a_granel ?? false`. Sin
-  `nombre.trim()` a nivel código (no hay `transform:true` global) — se guarda tal cual con espacios
-  si el cliente los manda.
+  `nombre.trim()` a nivel código — se guarda tal cual con espacios si el cliente los manda. (Nota:
+  esto no es porque `@Transform` requiera `transform:true` en el `ValidationPipe` global para
+  aplicarse — eso quedó verificado como falso en BE-04, ver `src/auth/README.md`; acá simplemente no
+  se agregó ningún `@Transform` para `nombre`.)
 - **No hay `findOne()` previo de duplicado** — el único control de nombre duplicado es el
   `try/catch` alrededor de `save()`: `23505` sobre el índice único → `409 ConflictException('Ya
   existe un producto con ese nombre')`; cualquier otro `unique_violation` → `409

@@ -6,6 +6,7 @@ import { Producto } from '../productos/entities/producto.entity';
 import { Ticket } from '../tickets/entities/ticket.entity';
 import { TicketItem } from '../tickets/entities/ticket-item.entity';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
+import { PasswordResetToken } from '../auth/entities/password-reset-token.entity';
 
 /**
  * DataSource standalone usado por el CLI de migraciones de TypeORM
@@ -24,7 +25,14 @@ export const dataSourceOptions: DataSourceOptions = {
   username: process.env.DB_USERNAME,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: [Usuario, Producto, Ticket, TicketItem, RefreshToken],
+  entities: [
+    Usuario,
+    Producto,
+    Ticket,
+    TicketItem,
+    RefreshToken,
+    PasswordResetToken,
+  ],
   migrations: [__dirname + '/migrations/*.{ts,js}'],
   synchronize: false,
   // La migración inicial activa pgcrypto y usa gen_random_uuid() (README
