@@ -97,11 +97,9 @@ reflejado todavía en ningún `README.md` de módulo y aun así ya afectar:
 ### Señal cuaternaria — cobertura de tests por módulo
 
 Aparición o eliminación de un archivo `*.spec.ts` dentro de un módulo de dominio (`src/auth/`,
-`src/productos/`, `src/tickets/`, `src/reportes/`, `src/usuarios/`). La sección 5 de `CLAUDE.md` hoy
-hace una afirmación puntual y verificable sobre esto ("solo `reportes/` tiene specs propios;
-`auth/`, `productos/`, `tickets/`, `usuarios/` no tienen"). Si esa afirmación deja de ser cierta
-(se agrega o se borra un spec en cualquiera de esos módulos), la sección 5 queda directamente falsa
-y hay que corregirla.
+`src/productos/`, `src/tickets/`, `src/reportes/`, `src/usuarios/`). La sección 5 de `CLAUDE.md`
+enumera qué módulos tienen specs propios y cuáles no. Si se agrega o se borra un spec en cualquiera
+de esos módulos, esa lista queda falsa y hay que corregirla.
 
 ### Cómo decidir
 

@@ -109,8 +109,8 @@ discutirlo explícitamente**:
 - **`ValidationPipe` global sin `transform: true`** (solo `whitelist: true, forbidNonWhitelisted:
   true`) — la coacción de tipos y la normalización se hacen a mano: `ParseIntPipe`/`ParseUUIDPipe`
   explícitos por parámetro en vez de DTOs con `@Type()` para valores primitivos de `@Param()`/
-  `@Query()`. Para el **body** (DTOs de clase) la conclusión es distinta de lo que decía antes este
-  mapa: un `@Transform()` de `class-transformer` en un DTO **sí llega a aplicarse** al valor final
+  `@Query()`. Para el **body** (DTOs de clase) es distinto: un `@Transform()` de
+  `class-transformer` en un DTO **sí llega a aplicarse** al valor final
   que recibe el controller/service pese a `transform: true` estar apagado — `whitelist: true` +
   `forbidNonWhitelisted: true` hacen que `ValidationPipe.transform()` devuelva `classToPlain(entity)`
   (la instancia ya transformada) en vez del objeto plano original (ver
@@ -137,7 +137,7 @@ discutirlo explícitamente**:
   `regeneratePin()` usa `update({ id, passwordHash: <el verificado> }, { pin })` y, si
   `affected === 0` (un reset concurrente cambió la contraseña), responde el mismo 400
   `"Contraseña incorrecta"`. Ver `src/auth/README.md`.
-- **`forgotPassword()` es atómico frente a llamadas concurrentes (antes BE-03, corregido)**: borra
+- **`forgotPassword()` es atómico frente a llamadas concurrentes**: borra
   el/los token(s) de reset previos e inserta el nuevo dentro de una transacción con
   `SELECT ... FOR UPDATE` (lock `pessimistic_write`) sobre la fila de `usuarios` — mismo patrón que
   ya usaba `resetPassword()` sobre la fila del token vigente. El índice único parcial
@@ -166,7 +166,7 @@ discutirlo explícitamente**:
   parámetros/query primitivos, `transform: true` sigue deshabilitado (§3) y la coacción de tipos se
   hace a mano con un pipe explícito (`ParseIntPipe`, `ParseUUIDPipe`) o en el service — no asumas
   que un DTO la hace por vos ahí. Para el **body**, en cambio, un `@Transform()` en el DTO sí se
-  aplica al valor final aunque `transform: true` esté apagado (matiz corregido en §3); no asumas cuál
+  aplica al valor final aunque `transform: true` esté apagado (ver §3); no asumas cuál
   de los dos casos aplica sin mirar el DTO y el controller reales.
 - **Migraciones**: nombre `<timestamp-ms>-<DescripciónPascalCase>.ts` en `src/database/migrations/`,
   corridas con el CLI de TypeORM apuntando a `src/database/data-source.ts` (no hay script npm
@@ -210,14 +210,14 @@ discutirlo explícitamente**:
 - **Tests**: sí hay suite configurada (Jest, config embebida en `package.json`, sin
   `jest.config.*` separado). `npm test` corre specs unitarios (`*.spec.ts` dentro de `src/`); `npm
   run test:e2e` corre **todo** `test/*.e2e-spec.ts` (config `test/jest-e2e.json`, `testRegex:
-  '.e2e-spec.ts$'` — ya no es solo `app.e2e-spec.ts`: también `body-limit.e2e-spec.ts` y
-  `forgot-password.e2e-spec.ts`); `npm run test:cov` para cobertura. Los specs unitarios no usan base
+  '.e2e-spec.ts$'`: `app.e2e-spec.ts`, `body-limit.e2e-spec.ts` y `forgot-password.e2e-spec.ts`);
+  `npm run test:cov` para cobertura. Los specs unitarios no usan base
   de datos: mockean los repositorios y construyen el service directamente. Los e2e sí levantan
   `AppModule` completo con conexión real a Postgres (nada mockeado) — hace falta un `.env` válido
   para correrlos. `body-limit.e2e-spec.ts` arma la app con `NestFactory.create()` + `configureApp()`
   (la misma función exportada de `src/main.ts`, ver §2) en vez del builder de testing default de
   Nest, justamente porque ese builder nunca pasa por `bootstrap()`/`configureApp()`.
-  `forgot-password.e2e-spec.ts` reproduce la condición de carrera BE-03 con 3 llamadas concurrentes
+  `forgot-password.e2e-spec.ts` reproduce la condición de carrera de `forgotPassword()` (§3) con 3 llamadas concurrentes
   reales contra la BD. **La cobertura real es baja**: `reportes/` tiene
   `reportes.controller.spec.ts` y `reportes.service.spec.ts` (incluyen un test de regresión del
   manejo de timezone en SQL, ver `src/reportes/README.md`); `auth/` tiene
