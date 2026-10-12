@@ -2,16 +2,25 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { Usuario } from '../usuarios/entities/usuario.entity';
+import { PagoHistorial } from './entities/pago-historial.entity';
 import { Suscripcion } from './entities/suscripcion.entity';
 import { estadoEfectivo } from './estado-efectivo';
 import { aIsoNegocio, finDePrueba } from './fechas';
-import type { SuscripcionSnapshot } from './interfaces/suscripcion-response.interface';
+import type {
+  PagoHistorialResponse,
+  SuscripcionSnapshot,
+} from './interfaces/suscripcion-response.interface';
+
+/** Máximo de pagos que devuelve `historial` en el snapshot (los más recientes). */
+export const MAX_HISTORIAL = 24;
 
 @Injectable()
 export class SuscripcionesService {
   constructor(
     @InjectRepository(Suscripcion)
     private readonly suscripcionRepository: Repository<Suscripcion>,
+    @InjectRepository(PagoHistorial)
+    private readonly pagoHistorialRepository: Repository<PagoHistorial>,
   ) {}
 
   /**
@@ -40,7 +49,8 @@ export class SuscripcionesService {
    * flujo_suscripcion.md, sección 2.1; reglas de la 3.7). Si la cuenta no
    * tiene fila (carrera con el registro o error al crearla), la repara con
    * `crearPrueba(usuario.id, usuario.createdAt)` y vuelve a leer.
-   * `historial` va vacío hasta la etapa 2.
+   * `historial` trae los últimos `MAX_HISTORIAL` pagos de la cuenta (más
+   * reciente primero). Nunca envía `gracia` ni `gracia_fin`.
    */
   async snapshot(
     usuario: Pick<Usuario, 'id' | 'createdAt'>,
@@ -75,8 +85,29 @@ export class SuscripcionesService {
       tienda: fila.tienda,
       motivo: conMotivo ? efectivo.motivo : null,
       ahora_servidor: aIsoNegocio(ahora),
-      historial: [],
+      historial: await this.historial(usuario.id),
     };
+  }
+
+  /**
+   * Últimos `MAX_HISTORIAL` pagos de la cuenta, `cobrado_en` descendente y
+   * `created_at` descendente como desempate (cubierto por
+   * IDX_pagos_historial_usuario_cobrado).
+   */
+  private async historial(usuarioId: string): Promise<PagoHistorialResponse[]> {
+    const pagos = await this.pagoHistorialRepository.find({
+      where: { usuarioId },
+      order: { cobradoEn: 'DESC', createdAt: 'DESC' },
+      take: MAX_HISTORIAL,
+    });
+    return pagos.map((pago) => ({
+      id: pago.externalId,
+      periodo: pago.periodo,
+      cobrado_en: aIsoNegocio(pago.cobradoEn),
+      monto: pago.monto,
+      moneda: pago.moneda.trim(),
+      estado: pago.estado,
+    }));
   }
 
   private buscarPorUsuario(usuarioId: string): Promise<Suscripcion | null> {

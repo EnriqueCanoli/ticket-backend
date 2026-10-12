@@ -85,7 +85,7 @@ export class AuthController {
   @Get('me')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
-  me(@CurrentUser() usuario: Usuario): MeResponse {
+  me(@CurrentUser() usuario: Usuario): Promise<MeResponse> {
     return this.authService.toMeResponse(usuario);
   }
 

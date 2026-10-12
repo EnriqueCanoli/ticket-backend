@@ -8,16 +8,18 @@ Google Play). Es dueño exclusivo de las tablas `suscripciones`, `compras`, `pag
 trackear en git); el contrato con el frontend está en `src/features/suscripcion/README.md` del repo
 `c:\dev\ticket` y en `src/shared/api/suscripcion.ts`.
 
-**Estado: etapa 1 de 6.** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
-existentes), el estado efectivo y `SuscripcionesService.snapshot()`. **Todavía no hay endpoints**,
-ni campo `suscripcion` en auth, ni bloqueo (403), ni compras, ni RTDN.
+**Estado: etapa 2 de 6.** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
+existentes), el estado efectivo, `SuscripcionesService.snapshot()` con el historial real,
+`GET /me/suscripcion` y el campo opcional `suscripcion` en auth (login, register y `GET /me`).
+**Todavía no hay** bloqueo (403), ni compras, ni RTDN.
 
 ## 2. Estructura real
 
 ```
 src/suscripciones/
-├── suscripciones.module.ts        # forFeature de las 4 entidades; exporta SuscripcionesService; sin controller
-├── suscripciones.service.ts       # crearPrueba(), snapshot()
+├── suscripciones.module.ts        # forFeature de las 4 entidades; registra el controller; exporta SuscripcionesService
+├── suscripciones.controller.ts    # GET /me/suscripcion
+├── suscripciones.service.ts       # crearPrueba(), snapshot(), historial() (privado), MAX_HISTORIAL
 ├── estado-efectivo.ts             # estadoEfectivo(fila, ahora): función pura (tabla 1.3 del plan)
 ├── fechas.ts                      # aIsoNegocio, finDePrueba, periodoNegocio, ZONA_NEGOCIO_OFFSET_MIN
 ├── entities/
@@ -29,12 +31,26 @@ src/suscripciones/
     └── suscripcion-response.interface.ts   # SuscripcionSnapshot y tipos (contrato con el frontend)
 ```
 
-Sin endpoints todavía. `SuscripcionesModule` no importa `AuthModule` (lo hace al revés:
-`AuthModule` importa `SuscripcionesModule`, y lo contrario crearía un ciclo). Lo consume
-`AuthService.register()` (`crearPrueba`, en la misma transacción que el alta del usuario).
+`SuscripcionesModule` no importa `AuthModule` (lo hace al revés: `AuthModule` importa
+`SuscripcionesModule`, y lo contrario crearía un ciclo). `SuscripcionesController` usa `JwtAuthGuard`
+y `@CurrentUser()` importándolos por archivo, igual que `ProductosController`. Lo consume
+`AuthService`: `register()` (`crearPrueba`, en la misma transacción que el alta del usuario) y
+`login()`/`register()`/`toMeResponse()` (`snapshot`).
 
-Tests: `fechas.spec.ts`, `estado-efectivo.spec.ts`, `suscripciones.service.spec.ts` (unitarios, sin
-BD) y `test/suscripcion-prueba.e2e-spec.ts` (Postgres real).
+Tests: `fechas.spec.ts`, `estado-efectivo.spec.ts`, `suscripciones.service.spec.ts`,
+`suscripciones.controller.spec.ts` (unitarios, sin BD), `test/suscripcion-prueba.e2e-spec.ts` y
+`test/suscripcion-lectura.e2e-spec.ts` (Postgres real).
+
+## 2.1 Endpoint
+
+### `GET /me/suscripcion`
+
+- Guard: `JwtAuthGuard`. Sin body, sin DTO y **sin `@Throttle` propio** (aplica el global de 60/min).
+- Éxito `200`: `SuscripcionSnapshot` (10 claves, snake_case, fechas `aIsoNegocio`, `ahora_servidor`
+  dentro del JSON). Sin token o con token inválido: `401`.
+- Si `snapshot()` falla sale el `500`: el cliente lo trata como `errorServidor` y nunca bloquea.
+- El mismo snapshot viaja en el campo opcional `suscripcion` de `POST /auth/login`,
+  `POST /auth/register` y `GET /me` (ver `src/auth/README.md`).
 
 ## 3. Reglas de negocio
 
@@ -76,8 +92,13 @@ Devuelve los 10 campos exactos de `SuscripcionSnapshot` (`estado`, `prueba_inici
 `acceso_hasta`, `proximo_cobro`, `renovacion_automatica`, `tienda`, `motivo`, `ahora_servidor`,
 `historial`). Reglas: `estado` es el efectivo; `proximo_cobro` solo si el efectivo es `activa` con
 renovación; `renovacion_automatica` es `false` si el efectivo no es `activa`; `motivo` solo con
-`prueba_vencida`/`vencida`; fechas con `aIsoNegocio`. **`historial` va siempre `[]` hasta la etapa
-2.**
+`prueba_vencida`/`vencida`; fechas con `aIsoNegocio`.
+
+**`historial`** (etapa 2): los últimos `MAX_HISTORIAL = 24` pagos de la cuenta en `pagos_historial`,
+ordenados por `cobrado_en` DESC y `created_at` DESC como desempate (lo cubre
+`IDX_pagos_historial_usuario_cobrado`). Cada elemento: `{ id: external_id, periodo, cobrado_en
+(aIsoNegocio), monto (number, por el `numericTransformer`), moneda (sin espacios), estado }`. No
+existe `GET /me/suscripcion/historial`: el historial solo viaja dentro del snapshot.
 
 ### Fechas y zona de negocio (riesgo R-7)
 
@@ -172,7 +193,6 @@ Pub/Sub), `FK_eventos_tienda_usuario_id` → `usuarios(id)` **SET NULL**,
 - **Sin relación inversa en `Usuario`.** Las relaciones (`@OneToOne`/`@ManyToOne` con
   `@JoinColumn` y `onDelete`) se declaran solo en las entidades hijas. Una inversa rompería
   `buildUsuario()` de `auth.service.spec.ts` (`tsc` compila también los specs).
-- **`historial` vacío** hasta la etapa 2.
 - **Precisión de `prueba_inicio`.** En un registro, `prueba_inicio` es `usuario.createdAt` tal como
   lo lee Node (milisegundos), mientras `usuarios.created_at` guarda microsegundos; pueden diferir
   por menos de 1 ms. No tiene consecuencias.
@@ -185,8 +205,8 @@ Pub/Sub), `FK_eventos_tienda_usuario_id` → `usuarios(id)` **SET NULL**,
 
 ## 6. Pendientes por etapa
 
-- **Etapa 2:** `GET /me/suscripcion`, `historial` real (máx. 24, de `pagos_historial`) y campo
-  opcional `suscripcion` en login/register/`GET /me`.
+- **Etapa 2 (hecha):** `GET /me/suscripcion`, `historial` real (máx. 24, de `pagos_historial`) y
+  campo opcional `suscripcion` en login/register/`GET /me`.
 - **Etapa 3:** guard y `403 SUSCRIPCION_REQUERIDA` en `POST /tickets` y `POST/PATCH/DELETE
   /productos`; `borrador_iniciado_en`.
 - **Etapa 4 (4a simulada, 4b real):** `validar-compra` y `restaurar`, `409 TIENDA_EN_USO`,

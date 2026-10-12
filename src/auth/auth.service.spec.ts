@@ -1,5 +1,5 @@
 import * as bcrypt from 'bcryptjs';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { AuthService } from './auth.service';
 import { Usuario } from '../usuarios/entities/usuario.entity';
@@ -16,6 +16,19 @@ import type { Repository } from 'typeorm';
 
 const PASSWORD = 'password1';
 const PASSWORD_HASH = bcrypt.hashSync(PASSWORD, 4);
+
+const SNAPSHOT = {
+  estado: 'prueba',
+  prueba_inicio: '2026-03-03T09:12:00-06:00',
+  prueba_fin: '2026-03-16T23:59:59-06:00',
+  acceso_hasta: null,
+  proximo_cobro: null,
+  renovacion_automatica: false,
+  tienda: null,
+  motivo: null,
+  ahora_servidor: '2026-03-10T10:00:00-06:00',
+  historial: [],
+};
 
 function buildUsuario(overrides: Partial<Usuario> = {}): Usuario {
   return {
@@ -61,7 +74,7 @@ interface Mocks {
   manager: Manager;
   jwtService: { signAsync: jest.Mock };
   mailService: { sendPasswordResetCode: jest.Mock };
-  suscripcionesService: { crearPrueba: jest.Mock };
+  suscripcionesService: { crearPrueba: jest.Mock; snapshot: jest.Mock };
 }
 
 function buildService(): { service: AuthService; mocks: Mocks } {
@@ -117,6 +130,7 @@ function buildService(): { service: AuthService; mocks: Mocks } {
     },
     suscripcionesService: {
       crearPrueba: jest.fn().mockResolvedValue(undefined),
+      snapshot: jest.fn().mockResolvedValue(SNAPSHOT),
     },
   };
 
@@ -457,5 +471,99 @@ describe('AuthService: claim `tv` en el access token (issueTokenPair)', () => {
       createdAt,
       mocks.manager,
     );
+  });
+});
+
+describe('AuthService: campo opcional `suscripcion` en login, register y me', () => {
+  let service: AuthService;
+  let mocks: Mocks;
+  let loggerError: jest.SpyInstance;
+
+  const registerDto = {
+    email: 'nuevo@example.com',
+    password: PASSWORD,
+    phone: '5512345678',
+    aceptoTerminos: true,
+  };
+
+  beforeEach(() => {
+    ({ service, mocks } = buildService());
+    loggerError = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    mocks.manager.save.mockImplementation((u: Usuario) => {
+      u.id = 'nuevo-id';
+      return Promise.resolve(u);
+    });
+  });
+
+  afterEach(() => {
+    loggerError.mockRestore();
+  });
+
+  it('login incluye suscripcion al nivel de user y tokens, y user no la contiene', async () => {
+    mocks.usuarioRepository.findOne.mockResolvedValue(buildUsuario());
+
+    const res = await service.login({
+      email: 'user@example.com',
+      password: PASSWORD,
+    });
+
+    expect(res.suscripcion).toEqual(SNAPSHOT);
+    expect(res.user).not.toHaveProperty('suscripcion');
+  });
+
+  it('register incluye suscripcion y user no la contiene', async () => {
+    mocks.usuarioRepository.findOne.mockResolvedValue(null);
+
+    const res = await service.register(registerDto);
+
+    expect(res.suscripcion).toEqual(SNAPSHOT);
+    expect(res.user).not.toHaveProperty('suscripcion');
+  });
+
+  it('toMeResponse es async e incluye suscripcion y updated_at', async () => {
+    const usuario = buildUsuario();
+
+    const res = await service.toMeResponse(usuario);
+
+    expect(res.suscripcion).toEqual(SNAPSHOT);
+    expect(res.updated_at).toBe(usuario.updatedAt);
+    expect(mocks.suscripcionesService.snapshot).toHaveBeenCalledWith(usuario);
+  });
+
+  it('si snapshot rechaza, login responde igual sin la clave suscripcion y registra el error', async () => {
+    mocks.suscripcionesService.snapshot.mockRejectedValue(new Error('boom'));
+    mocks.usuarioRepository.findOne.mockResolvedValue(buildUsuario());
+
+    const res = await service.login({
+      email: 'user@example.com',
+      password: PASSWORD,
+    });
+
+    expect(res.access_token).toBe('signed-jwt');
+    expect(res).not.toHaveProperty('suscripcion');
+    expect(loggerError).toHaveBeenCalledTimes(1);
+  });
+
+  it('si snapshot rechaza, register responde igual sin la clave suscripcion y registra el error', async () => {
+    mocks.suscripcionesService.snapshot.mockRejectedValue(new Error('boom'));
+    mocks.usuarioRepository.findOne.mockResolvedValue(null);
+
+    const res = await service.register(registerDto);
+
+    expect(res.access_token).toBe('signed-jwt');
+    expect(res).not.toHaveProperty('suscripcion');
+    expect(loggerError).toHaveBeenCalledTimes(1);
+  });
+
+  it('si snapshot rechaza, toMeResponse responde igual sin la clave suscripcion y registra el error', async () => {
+    mocks.suscripcionesService.snapshot.mockRejectedValue(new Error('boom'));
+    const usuario = buildUsuario();
+
+    const res = await service.toMeResponse(usuario);
+
+    expect(res.email).toBe(usuario.email);
+    expect(res.updated_at).toBe(usuario.updatedAt);
+    expect(res).not.toHaveProperty('suscripcion');
+    expect(loggerError).toHaveBeenCalledTimes(1);
   });
 });

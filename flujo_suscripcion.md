@@ -39,7 +39,7 @@
    los tests en verde. No se adelanta trabajo de una etapa posterior.
 2. **Una sola rama y un commit por etapa.** Todo el trabajo del backend va en la rama
    `feature/suscripcion` del backend, que se crea al empezar la etapa 1 desde `main`
-   (`git switch -c feature/suscripcion`). Hoy el backend está en `main`. Cada etapa termina con un commit
+   (`git switch -c feature/suscripcion`). Desde la etapa 1 el backend trabaja en `feature/suscripcion` (ya existe; `main` queda sin tocar hasta el final). Cada etapa termina con un commit
    (la 4 puede cerrar con dos, uno por subetapa). El frontend sigue en su propia rama
    `feature/suscripcion` (`C:\dev\ticket`); sus cambios de cada etapa se hacen en esa rama.
 3. **Antes de cada etapa, volver a verificar el contrato contra el frontend.** Leer de nuevo:
@@ -1118,3 +1118,13 @@ Fuera de las etapas actuales. La columna `tienda` conserva `varchar` con CHECK (
 | 2026-10-12 | Etapa 1: nombres de las FK de `eventos_tienda`: `FK_eventos_tienda_usuario_id` (→ `usuarios`, SET NULL) y `FK_eventos_tienda_compra_id` (→ `compras`, SET NULL). |
 | 2026-10-12 | Etapa 1: `Usuario` no tiene relación inversa hacia `suscripciones` (ni hacia las demás tablas nuevas); las relaciones se declaran solo en las entidades hijas, porque una inversa rompería `buildUsuario()` de `auth.service.spec.ts` (`tsc` compila también los specs). |
 | 2026-10-12 | Etapa 1: `crearPrueba` usa SQL parametrizado con `ON CONFLICT ("usuario_id") DO NOTHING` en vez de `.orIgnore()` del query builder (que emitiría un `ON CONFLICT DO NOTHING` sin destino). |
+| 2026-10-12 | Etapa 2: `MAX_HISTORIAL = 24` pagos en `historial` (exportada de `suscripciones.service.ts`), ordenados por `cobrado_en` DESC y `created_at` DESC; sin endpoint aparte de historial. |
+| 2026-10-12 | Etapa 2: `GET /me/suscripcion` no lleva `@Throttle` propio (aplica el global de 60/min); es lectura barata y el cliente la repite al volver a primer plano. |
+| 2026-10-12 | Etapa 2: `SuscripcionesController` importa `JwtAuthGuard` y `CurrentUser` por archivo, sin importar `AuthModule` (evita el ciclo con `AuthModule` → `SuscripcionesModule`). |
+| 2026-10-12 | Etapa 2: un fallo de `snapshot()` en login, register y `GET /me` se registra con el logger y se omite la clave `suscripcion` (`AuthService.snapshotSeguro`); nunca rompe la autenticación. En `GET /me/suscripcion` sí sale el 500 (el cliente lo trata como `errorServidor`). |
+| 2026-10-12 | Etapa 2: en `register` el snapshot se calcula DESPUÉS de la transacción y fuera del `try/catch` del `23505`, para que un fallo del snapshot no se confunda con un conflicto de email. |
+| 2026-10-12 | Etapa 2: el frontend siembra el store con `suscripcion` solo si el campo viene Y `!USE_SUBSCRIPTION_MOCK`, para que el snapshot real y el simulado no se pisen. `USE_SUBSCRIPTION_MOCK` se queda en `__DEV__ && true`; el usuario lo pone en `false` solo para probar contra el backend real. |
+| 2026-10-12 | Etapa 2: nuevo interruptor `USE_PURCHASES_MOCK` en `compras.ts` (separado de `USE_SUBSCRIPTION_MOCK`): elige el adaptador de compras y las filas DEV de compra. Con la lectura real y las compras simuladas, `validarCompra` y `restaurar` irán al backend real y fallarán hasta la etapa 4 (esperado). |
+| 2026-10-12 | Etapa 2: el e2e (`test/suscripcion-lectura.e2e-spec.ts`) no llama a `POST /auth/register` (throttle de 3 cada 30 minutos); register queda cubierto por los unitarios de `auth.service.spec.ts`. Sí usa `POST /auth/login` (2 llamadas, bajo el límite de 5/min). |
+| 2026-10-12 | Etapa 2 (desviación menor): para simular una prueba vencida, el e2e y la prueba manual mueven `prueba_inicio` a `now() - 15 days` además de `prueba_fin` a `now() - 1 hour`, porque `CHK_suscripciones_prueba` exige `prueba_fin > prueba_inicio` y la cuenta se acaba de crear. El plan decía solo `prueba_fin`. |
+| 2026-10-12 | Etapa 2: `prettier --write` sobre los archivos tocados (el repo tiene prettier dentro de eslint); `npm run lint` no se usó. Los 2 errores `_refreshTokenEntity` de `auth.service.ts` siguen sin tocar. |

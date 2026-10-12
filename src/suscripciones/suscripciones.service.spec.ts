@@ -1,6 +1,7 @@
 import type { Repository } from 'typeorm';
 import { Suscripcion } from './entities/suscripcion.entity';
-import { SuscripcionesService } from './suscripciones.service';
+import { PagoHistorial } from './entities/pago-historial.entity';
+import { MAX_HISTORIAL, SuscripcionesService } from './suscripciones.service';
 
 /**
  * Specs unitarios sin base de datos: el repositorio se mockea y el service se
@@ -44,10 +45,12 @@ function buildFila(overrides: Partial<Suscripcion> = {}): Suscripcion {
 function buildService() {
   const manager = { query: jest.fn().mockResolvedValue([]) };
   const suscripcionRepository = { findOne: jest.fn(), manager };
+  const pagoHistorialRepository = { find: jest.fn().mockResolvedValue([]) };
   const service = new SuscripcionesService(
     suscripcionRepository as unknown as Repository<Suscripcion>,
+    pagoHistorialRepository as unknown as Repository<PagoHistorial>,
   );
-  return { service, suscripcionRepository, manager };
+  return { service, suscripcionRepository, pagoHistorialRepository, manager };
 }
 
 const USUARIO = {
@@ -196,6 +199,70 @@ describe('SuscripcionesService.snapshot', () => {
     expect(params[1]).toBe(USUARIO.createdAt);
     expect(suscripcionRepository.findOne).toHaveBeenCalledTimes(2);
     expect(snap.estado).toBe('prueba');
+  });
+});
+
+describe('SuscripcionesService.snapshot: historial', () => {
+  it('sin pagos: historial vacío', async () => {
+    const { service, suscripcionRepository } = buildService();
+    suscripcionRepository.findOne.mockResolvedValue(buildFila());
+
+    const snap = await service.snapshot(USUARIO);
+
+    expect(snap.historial).toEqual([]);
+  });
+
+  it('mapea los pagos y pide orden descendente con take MAX_HISTORIAL', async () => {
+    const { service, suscripcionRepository, pagoHistorialRepository } =
+      buildService();
+    suscripcionRepository.findOne.mockResolvedValue(buildFila());
+    pagoHistorialRepository.find.mockResolvedValue([
+      {
+        externalId: 'GPA.2',
+        periodo: '2026-04',
+        cobradoEn: new Date('2026-04-14T20:05:00Z'),
+        monto: 49,
+        moneda: 'MXN ',
+        estado: 'pagado',
+      },
+      {
+        externalId: 'GPA.1',
+        periodo: '2026-03',
+        cobradoEn: new Date('2026-03-14T20:05:00Z'),
+        monto: 49.5,
+        moneda: 'MXN',
+        estado: 'reembolsado',
+      },
+    ]);
+
+    const snap = await service.snapshot(USUARIO);
+
+    expect(MAX_HISTORIAL).toBe(24);
+    expect(pagoHistorialRepository.find).toHaveBeenCalledWith({
+      where: { usuarioId: 'user-1' },
+      order: { cobradoEn: 'DESC', createdAt: 'DESC' },
+      take: 24,
+    });
+    expect(snap.historial).toEqual([
+      {
+        id: 'GPA.2',
+        periodo: '2026-04',
+        cobrado_en: '2026-04-14T14:05:00-06:00',
+        monto: 49,
+        moneda: 'MXN',
+        estado: 'pagado',
+      },
+      {
+        id: 'GPA.1',
+        periodo: '2026-03',
+        cobrado_en: '2026-03-14T14:05:00-06:00',
+        monto: 49.5,
+        moneda: 'MXN',
+        estado: 'reembolsado',
+      },
+    ]);
+    expect(typeof snap.historial[0].monto).toBe('number');
+    expect(snap.historial[0].cobrado_en).toMatch(ISO_NEGOCIO);
   });
 });
 

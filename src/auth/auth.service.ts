@@ -29,6 +29,7 @@ import {
   TokenPairResponse,
   UserResponse,
 } from './interfaces/auth-response.interface';
+import type { SuscripcionSnapshot } from '../suscripciones/interfaces/suscripcion-response.interface';
 import { MailService } from './mail.service';
 
 /** Rondas de salt para bcryptjs (password). */
@@ -208,9 +209,12 @@ export class AuthService {
     const { refreshTokenEntity: _refreshTokenEntity, ...tokens } =
       await this.issueTokenPair(usuario);
 
+    const suscripcion = await this.snapshotSeguro(usuario);
+
     return {
       user: this.toUserResponse(usuario),
       ...tokens,
+      ...(suscripcion ? { suscripcion } : {}),
     };
   }
 
@@ -243,9 +247,12 @@ export class AuthService {
     const { refreshTokenEntity: _refreshTokenEntity, ...tokens } =
       await this.issueTokenPair(usuario);
 
+    const suscripcion = await this.snapshotSeguro(usuario);
+
     return {
       user: this.toUserResponse(usuario),
       ...tokens,
+      ...(suscripcion ? { suscripcion } : {}),
     };
   }
 
@@ -344,11 +351,32 @@ export class AuthService {
     return usuario;
   }
 
-  toMeResponse(usuario: Usuario): MeResponse {
+  async toMeResponse(usuario: Usuario): Promise<MeResponse> {
+    const suscripcion = await this.snapshotSeguro(usuario);
     return {
       ...this.toUserResponse(usuario),
       updated_at: usuario.updatedAt,
+      ...(suscripcion ? { suscripcion } : {}),
     };
+  }
+
+  /**
+   * Snapshot de suscripción para login/register/me. Un fallo nunca rompe la
+   * respuesta: se registra y se omite el campo (el cliente lo pide después
+   * con GET /me/suscripcion).
+   */
+  private async snapshotSeguro(
+    usuario: Usuario,
+  ): Promise<SuscripcionSnapshot | undefined> {
+    try {
+      return await this.suscripcionesService.snapshot(usuario);
+    } catch (error) {
+      this.logger.error(
+        'No se pudo calcular el snapshot de suscripción',
+        error,
+      );
+      return undefined;
+    }
   }
 
   toPinResponse(usuario: Usuario): PinResponse {

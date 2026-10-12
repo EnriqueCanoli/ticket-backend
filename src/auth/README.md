@@ -32,8 +32,11 @@ Sin prefijo global de rutas (`@Controller()` vacío en `auth.controller.ts`).
   campo extra en el body = `400`.
 - Éxito `201` — `AuthResponse`:
   ```
-  { user: { id, email, phone, created_at }, access_token, refresh_token, token_type: 'Bearer', expires_in }
+  { user: { id, email, phone, created_at }, access_token, refresh_token, token_type: 'Bearer', expires_in, suscripcion? }
   ```
+  `suscripcion` (opcional) es el `SuscripcionSnapshot` y va al mismo nivel que `user` y los tokens,
+  **no dentro de `user`**. Se calcula DESPUÉS de la transacción y fuera del `try/catch` del `23505`;
+  si el cálculo falla se omite la clave (ver sección 5).
 - Errores:
   - `400` validación DTO / campo no whitelisted.
   - `409` — dos caminos, ambos posibles:
@@ -49,8 +52,8 @@ Sin prefijo global de rutas (`@Controller()` vacío en `auth.controller.ts`).
   usuario.createdAt, manager)`, que inserta la fila de `suscripciones` (prueba de 14 días,
   `prueba_inicio = usuario.createdAt`). Es todo o nada: no queda una cuenta sin suscripción ni una
   suscripción sin cuenta. La transacción está **dentro** del mismo `try/catch` de arriba, así que
-  la traducción del `23505` a `409` no cambia. La forma de la respuesta de `register` no cambia
-  (el campo `suscripcion` llega en la etapa 2). Dependencia nueva: `AuthModule` importa
+  la traducción del `23505` a `409` no cambia. La respuesta de `register` gana el campo
+  opcional `suscripcion` (etapa 2). Dependencia nueva: `AuthModule` importa
   `SuscripcionesModule` y `AuthService` inyecta `SuscripcionesService` (último parámetro del
   constructor). Ver `src/suscripciones/README.md`.
 
@@ -58,7 +61,7 @@ Sin prefijo global de rutas (`@Controller()` vacío en `auth.controller.ts`).
 
 - Guard: ninguno. Throttle propio: **5 req / min por IP**.
 - Body `LoginDto`: `email` (`@IsEmail()`), `password` (mismo regex + `@MaxBcryptBytes()` que register).
-- Éxito `200`: mismo shape `AuthResponse` que register.
+- Éxito `200`: mismo shape `AuthResponse` que register (incluye `suscripcion?` al nivel de `user`).
 - `401` único mensaje `'Credenciales inválidas'` tanto para email inexistente como para password
   incorrecto. Mitigación de timing: `bcrypt.compare` corre siempre — si `usuario` es `null`, compara
   contra un `DUMMY_PASSWORD_HASH` precomputado — para que un email inexistente pague el mismo costo
@@ -98,7 +101,9 @@ Sin prefijo global de rutas (`@Controller()` vacío en `auth.controller.ts`).
 ### `GET /me`
 
 - Guard: `JwtAuthGuard`.
-- Éxito `200` — `MeResponse`: `{ id, email, phone, created_at, updated_at }`.
+- Éxito `200` — `MeResponse`: `{ id, email, phone, created_at, updated_at, suscripcion? }`.
+  `toMeResponse()` es **async** (calcula el snapshot); `AuthController.me()` devuelve
+  `Promise<MeResponse>`.
 - `401` (formato default de Passport, `{"statusCode":401,"message":"Unauthorized","error":"Unauthorized"}`
   — distinto del mensaje custom de login/refresh) en: header ausente, token mal formado/firma
   inválida, expirado, `sub` del payload ya no existe en `usuarios` (borrado — hoy no hay endpoint
@@ -347,6 +352,13 @@ relevantes para `auth`:
   la defensa de BD en profundidad para el mismo invariante.
 
 ## 5. Decisiones de diseño / gotchas
+
+- **Un fallo del snapshot es silencioso.** `AuthService.snapshotSeguro()` llama a
+  `SuscripcionesService.snapshot(usuario)`; si lanza, registra
+  `this.logger.error('No se pudo calcular el snapshot de suscripción', error)` y devuelve
+  `undefined`, y `login`, `register` y `me` responden igual pero **sin la clave** `suscripcion`
+  (`...(suscripcion ? { suscripcion } : {})`). Nunca rompe la autenticación; el cliente lo pide
+  después con `GET /me/suscripcion`.
 
 - **PIN de 4 dígitos sin hashear, en texto plano** (`usuarios.pin`) — decisión explícita de
   producto, no descuido. Es un gate puramente de UI local en el frontend; el backend nunca lo
