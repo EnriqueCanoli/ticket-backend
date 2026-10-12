@@ -106,4 +106,9 @@ async function bootstrap() {
   configureApp(app);
   await app.listen(process.env.PORT ?? 3000);
 }
-void bootstrap();
+// Solo se levanta el servidor al ejecutar este archivo como entrada (`node dist/main`). Los tests
+// e2e importan `configureApp` de aquí; sin esta guarda cada import abría un servidor real en el
+// puerto 3000 y dos suites en paralelo chocaban (EADDRINUSE).
+if (require.main === module) {
+  void bootstrap();
+}

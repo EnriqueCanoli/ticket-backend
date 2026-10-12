@@ -41,6 +41,17 @@ vive en `src/reportes/` (que inyecta `TicketItem` directamente y hace sus propio
     deduplicados>"` cuando algún `producto_id` no existe **o pertenece a otro usuario**
     (indistinguibles a propósito — evita leak de existencia de IDs ajenos).
   - `401` estándar de `JwtAuthGuard`.
+  - `403` `{ statusCode: 403, message: 'SUSCRIPCION_REQUERIDA: tu suscripción no está activa',
+    error: 'Forbidden' }` cuando el estado efectivo de la suscripción es `prueba_vencida`, `vencida`
+    o `pago_en_proceso` (etapa 3). Lo lanza `SuscripcionActivaGuard`
+    (`@UseGuards(JwtAuthGuard, SuscripcionActivaGuard)` en el controller); `TicketsService`, el DTO y
+    la firma de `create` no participan. Orden: **403 → validación** (el guard corre antes que el
+    `ValidationPipe`, así que una cuenta bloqueada recibe 403 aunque el body sea inválido).
+    **Solo cuenta la hora del servidor**: no hay ventana de tolerancia ni excepción de "venta en
+    curso" (un ticket empezado antes del vencimiento y guardado después da 403; el cliente conserva
+    el borrador y se guarda tras pagar).
+  - **No existe `borrador_iniciado_en`** (campo descartado por decisión de producto): con
+    `forbidNonWhitelisted` un body que lo traiga responde `400`.
 
 ## 3. Reglas de negocio (mecanismo exacto del snapshot)
 

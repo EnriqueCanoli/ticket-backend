@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Producto } from './entities/producto.entity';
 import { TicketItem } from '../tickets/entities/ticket-item.entity';
+import { SuscripcionesModule } from '../suscripciones/suscripciones.module';
 import { ProductosService } from './productos.service';
 import { ProductosController } from './productos.controller';
 
@@ -12,6 +13,7 @@ import { ProductosController } from './productos.controller';
     // de costo (vía el EntityManager de la transacción), y `ProductosService.remove`
     // lo usa (vía Repository inyectado) para saber si un producto ya fue vendido.
     TypeOrmModule.forFeature([Producto, TicketItem]),
+    SuscripcionesModule,
   ],
   controllers: [ProductosController],
   providers: [ProductosService],

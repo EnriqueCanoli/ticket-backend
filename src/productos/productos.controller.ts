@@ -17,6 +17,7 @@ import { SearchProductosDto } from './dto/search-productos.dto';
 import { CreateProductoDto } from './dto/create-producto.dto';
 import { UpdateProductoDto } from './dto/update-producto.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { SuscripcionActivaGuard } from '../suscripciones/guards/suscripcion-activa.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { Usuario } from '../usuarios/entities/usuario.entity';
 import type {
@@ -64,7 +65,7 @@ export class ProductosController {
 
   @Post('productos')
   @HttpCode(HttpStatus.CREATED)
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SuscripcionActivaGuard)
   create(
     @Body() dto: CreateProductoDto,
     @CurrentUser() usuario: Usuario,
@@ -74,7 +75,7 @@ export class ProductosController {
 
   @Patch('productos/:id')
   @HttpCode(HttpStatus.OK)
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SuscripcionActivaGuard)
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateProductoDto,
@@ -85,7 +86,7 @@ export class ProductosController {
 
   @Delete('productos/:id')
   @HttpCode(HttpStatus.OK)
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SuscripcionActivaGuard)
   remove(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() usuario: Usuario,

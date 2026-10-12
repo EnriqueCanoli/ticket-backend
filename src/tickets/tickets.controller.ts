@@ -9,6 +9,7 @@ import {
 import { TicketsService } from './tickets.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { SuscripcionActivaGuard } from '../suscripciones/guards/suscripcion-activa.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { Usuario } from '../usuarios/entities/usuario.entity';
 import type { TicketResponse } from './interfaces/ticket-response.interface';
@@ -20,7 +21,7 @@ export class TicketsController {
 
   @Post('tickets')
   @HttpCode(HttpStatus.CREATED)
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SuscripcionActivaGuard)
   create(
     @Body() dto: CreateTicketDto,
     @CurrentUser() usuario: Usuario,

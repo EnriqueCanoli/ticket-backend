@@ -8,18 +8,22 @@ Google Play). Es dueño exclusivo de las tablas `suscripciones`, `compras`, `pag
 trackear en git); el contrato con el frontend está en `src/features/suscripcion/README.md` del repo
 `c:\dev\ticket` y en `src/shared/api/suscripcion.ts`.
 
-**Estado: etapa 2 de 6.** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
+**Estado: etapa 3 de 6.** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
 existentes), el estado efectivo, `SuscripcionesService.snapshot()` con el historial real,
 `GET /me/suscripcion` y el campo opcional `suscripcion` en auth (login, register y `GET /me`).
-**Todavía no hay** bloqueo (403), ni compras, ni RTDN.
+Desde la etapa 3 el servidor **bloquea** (403 `SUSCRIPCION_REQUERIDA`) `POST /tickets` y
+`POST/PATCH/DELETE /productos` con la suscripción no activa. **Todavía no hay** compras ni RTDN.
 
 ## 2. Estructura real
 
 ```
 src/suscripciones/
-├── suscripciones.module.ts        # forFeature de las 4 entidades; registra el controller; exporta SuscripcionesService
+├── suscripciones.module.ts        # forFeature de las 4 entidades; registra el controller; exporta SuscripcionesService y SuscripcionActivaGuard
 ├── suscripciones.controller.ts    # GET /me/suscripcion
-├── suscripciones.service.ts       # crearPrueba(), snapshot(), historial() (privado), MAX_HISTORIAL
+├── suscripciones.service.ts       # crearPrueba(), snapshot(), estaBloqueada(), assertPuedeEscribir(), obtenerFila()/historial() (privados), MAX_HISTORIAL
+├── bloqueo.ts                     # MENSAJE_SUSCRIPCION_REQUERIDA, ESTADOS_BLOQUEADOS, esEstadoBloqueado(): funciones puras
+├── guards/
+│   └── suscripcion-activa.guard.ts  # SuscripcionActivaGuard (va siempre DESPUÉS de JwtAuthGuard)
 ├── estado-efectivo.ts             # estadoEfectivo(fila, ahora): función pura (tabla 1.3 del plan)
 ├── fechas.ts                      # aIsoNegocio, finDePrueba, periodoNegocio, ZONA_NEGOCIO_OFFSET_MIN
 ├── entities/
@@ -38,8 +42,9 @@ y `@CurrentUser()` importándolos por archivo, igual que `ProductosController`. 
 `login()`/`register()`/`toMeResponse()` (`snapshot`).
 
 Tests: `fechas.spec.ts`, `estado-efectivo.spec.ts`, `suscripciones.service.spec.ts`,
-`suscripciones.controller.spec.ts` (unitarios, sin BD), `test/suscripcion-prueba.e2e-spec.ts` y
-`test/suscripcion-lectura.e2e-spec.ts` (Postgres real).
+`suscripciones.controller.spec.ts`, `bloqueo.spec.ts`, `guards/suscripcion-activa.guard.spec.ts`
+(unitarios, sin BD), `test/suscripcion-prueba.e2e-spec.ts`, `test/suscripcion-lectura.e2e-spec.ts` y
+`test/suscripcion-bloqueo.e2e-spec.ts` (Postgres real).
 
 ## 2.1 Endpoint
 
@@ -51,6 +56,49 @@ Tests: `fechas.spec.ts`, `estado-efectivo.spec.ts`, `suscripciones.service.spec.
 - Si `snapshot()` falla sale el `500`: el cliente lo trata como `errorServidor` y nunca bloquea.
 - El mismo snapshot viaja en el campo opcional `suscripcion` de `POST /auth/login`,
   `POST /auth/register` y `GET /me` (ver `src/auth/README.md`).
+
+## 2.2 Bloqueo de escrituras (etapa 3)
+
+Con el estado **efectivo** `prueba_vencida`, `vencida` o `pago_en_proceso` (`ESTADOS_BLOQUEADOS`) se
+rechazan con `403` y el cuerpo exacto
+`{ statusCode: 403, message: 'SUSCRIPCION_REQUERIDA: tu suscripción no está activa', error: 'Forbidden' }`
+(el código va AL INICIO del `message` porque el cliente lo busca con `includes`):
+
+- `POST /tickets`.
+- `POST /productos`, `PATCH /productos/:id`, `DELETE /productos/:id`.
+
+**No se bloquean:** `GET /productos`, `GET /productos/catalogo`, `GET /reportes/*`, `GET /me`,
+`GET /me/suscripcion` ni auth.
+
+Reglas:
+
+- **Solo cuenta la hora del servidor** (`ahora = new Date()`), nunca la del teléfono.
+- **Sin ventana de tolerancia ni excepción de "venta en curso"** (decisión del dueño del producto): un
+  ticket empezado antes del vencimiento y guardado después da 403; no existe `borrador_iniciado_en`
+  (con `forbidNonWhitelisted` el campo da `400`). El borrador se conserva en el teléfono y se guarda
+  tras pagar.
+- Al volver a `activa` (u otro estado no bloqueado) se desbloquea sin pasos extra: el estado efectivo se
+  recalcula en cada petición.
+
+API:
+
+- `esEstadoBloqueado(estado): boolean` (`bloqueo.ts`, pura).
+- `SuscripcionesService.estaBloqueada(usuario: Pick<Usuario,'id'|'createdAt'>, ahora = new Date()):
+  Promise<boolean>`: **una sola consulta** (`findOne` por `usuario_id`, usa el UNIQUE), no carga el
+  historial ni llama a `snapshot()`. Repara una cuenta sin fila (helper privado `obtenerFila`,
+  compartido con `snapshot()`).
+- `SuscripcionesService.assertPuedeEscribir(usuario, ahora = new Date()): Promise<void>`: lanza
+  `ForbiddenException(MENSAJE_SUSCRIPCION_REQUERIDA)` si está bloqueada.
+- `SuscripcionActivaGuard` (`guards/`): lee `request.user`, lanza `UnauthorizedException` si falta,
+  llama a `assertPuedeEscribir` y devuelve `true`. **Nunca devuelve `false`**: si lo hiciera Nest
+  respondería "Forbidden resource" y el cliente no reconocería el código. Debe ir siempre después de
+  `JwtAuthGuard`.
+
+Dónde se aplica: `@UseGuards(JwtAuthGuard, SuscripcionActivaGuard)` en `TicketsController.create` y en
+`ProductosController.create/update/remove`. Opción elegida: `SuscripcionesModule` **exporta** el guard y
+`TicketsModule` y `ProductosModule` importan `SuscripcionesModule` (en vez de declarar el guard como
+provider en cada módulo). El guard corre antes que `ParseUUIDPipe` y que el `ValidationPipe`: una cuenta
+bloqueada recibe 403 aunque el `:id` o el body sean inválidos (orden 403 → validación).
 
 ## 3. Reglas de negocio
 
@@ -69,8 +117,8 @@ Tests: `fechas.spec.ts`, `estado-efectivo.spec.ts`, `suscripciones.service.spec.
 - Alta en `register`: dentro de la misma transacción que el `save` del usuario, con
   `prueba_inicio = usuario.createdAt`. `crearPrueba()` es idempotente
   (`INSERT ... ON CONFLICT ("usuario_id") DO NOTHING`).
-- Si una cuenta no tiene fila (carrera o fallo anterior), `snapshot()` la crea con
-  `prueba_inicio = usuario.createdAt` y vuelve a leer.
+- Si una cuenta no tiene fila (carrera o fallo anterior), `snapshot()` y `estaBloqueada()` la crean con
+  `prueba_inicio = usuario.createdAt` y vuelven a leer (`obtenerFila`).
 
 ### Estado efectivo (`estadoEfectivo`)
 
@@ -207,8 +255,8 @@ Pub/Sub), `FK_eventos_tienda_usuario_id` → `usuarios(id)` **SET NULL**,
 
 - **Etapa 2 (hecha):** `GET /me/suscripcion`, `historial` real (máx. 24, de `pagos_historial`) y
   campo opcional `suscripcion` en login/register/`GET /me`.
-- **Etapa 3:** guard y `403 SUSCRIPCION_REQUERIDA` en `POST /tickets` y `POST/PATCH/DELETE
-  /productos`; `borrador_iniciado_en`.
+- **Etapa 3 (hecha):** `SuscripcionActivaGuard` y `403 SUSCRIPCION_REQUERIDA` en `POST /tickets` y
+  `POST/PATCH/DELETE /productos`. Sin `borrador_iniciado_en` ni ventana (descartados).
 - **Etapa 4 (4a simulada, 4b real):** `validar-compra` y `restaurar`, `409 TIENDA_EN_USO`,
   verificadores, acknowledge, `cuenta_ofuscada`.
 - **Etapa 5:** RTDN de Pub/Sub (`eventos_tienda`).

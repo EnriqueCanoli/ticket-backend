@@ -1,3 +1,4 @@
+import { ForbiddenException } from '@nestjs/common';
 import type { Repository } from 'typeorm';
 import { Suscripcion } from './entities/suscripcion.entity';
 import { PagoHistorial } from './entities/pago-historial.entity';
@@ -298,5 +299,89 @@ describe('SuscripcionesService.crearPrueba', () => {
 
     expect(otroManager.query).toHaveBeenCalledTimes(1);
     expect(manager.query).not.toHaveBeenCalled();
+  });
+});
+
+describe('SuscripcionesService.estaBloqueada / assertPuedeEscribir', () => {
+  const AHORA = new Date('2026-03-20T10:00:00-06:00');
+  const FUTURO = new Date('2026-04-20T10:00:00-06:00');
+  const PASADO = new Date('2026-03-10T10:00:00-06:00');
+
+  const casos: Array<[string, Partial<Suscripcion>, boolean]> = [
+    [
+      'prueba vigente',
+      { pruebaFin: new Date('2026-03-25T23:59:59-06:00') },
+      false,
+    ],
+    ['prueba con prueba_fin pasado', { pruebaFin: PASADO }, true],
+    [
+      'activa con renovación',
+      { estado: 'activa', renovacionAutomatica: true, accesoHasta: PASADO },
+      false,
+    ],
+    [
+      'cancelada con acceso_hasta futuro',
+      { estado: 'cancelada', accesoHasta: FUTURO },
+      false,
+    ],
+    [
+      'cancelada con acceso_hasta pasado',
+      { estado: 'cancelada', accesoHasta: PASADO },
+      true,
+    ],
+    ['vencida', { estado: 'vencida', motivo: 'cobro_fallido' }, true],
+    [
+      'pago_en_proceso',
+      { estado: 'pago_en_proceso', tienda: 'google_play' },
+      true,
+    ],
+  ];
+
+  it.each(casos)('estaBloqueada: %s', async (_nombre, fila, esperado) => {
+    const { service, suscripcionRepository, pagoHistorialRepository } =
+      buildService();
+    suscripcionRepository.findOne.mockResolvedValue(buildFila(fila));
+
+    await expect(service.estaBloqueada(USUARIO, AHORA)).resolves.toBe(esperado);
+    expect(suscripcionRepository.findOne).toHaveBeenCalledTimes(1);
+    expect(pagoHistorialRepository.find).not.toHaveBeenCalled();
+  });
+
+  it.each(casos)(
+    'assertPuedeEscribir: %s',
+    async (_nombre, fila, bloqueada) => {
+      const { service, suscripcionRepository } = buildService();
+      suscripcionRepository.findOne.mockResolvedValue(buildFila(fila));
+
+      if (bloqueada) {
+        const error = await service
+          .assertPuedeEscribir(USUARIO, AHORA)
+          .catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect((error as ForbiddenException).message).toBe(
+          'SUSCRIPCION_REQUERIDA: tu suscripción no está activa',
+        );
+      } else {
+        await expect(
+          service.assertPuedeEscribir(USUARIO, AHORA),
+        ).resolves.toBeUndefined();
+      }
+    },
+  );
+
+  it('una cuenta sin fila se repara y no queda bloqueada', async () => {
+    const { service, suscripcionRepository, manager } = buildService();
+    suscripcionRepository.findOne
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(
+        buildFila({ pruebaFin: new Date('2026-03-25T23:59:59-06:00') }),
+      );
+
+    await expect(service.estaBloqueada(USUARIO, AHORA)).resolves.toBe(false);
+    expect(manager.query).toHaveBeenCalledTimes(1);
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining([USUARIO.id]),
+    );
   });
 });

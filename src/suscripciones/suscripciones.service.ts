@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 import { Usuario } from '../usuarios/entities/usuario.entity';
 import { PagoHistorial } from './entities/pago-historial.entity';
 import { Suscripcion } from './entities/suscripcion.entity';
+import { esEstadoBloqueado, MENSAJE_SUSCRIPCION_REQUERIDA } from './bloqueo';
 import { estadoEfectivo } from './estado-efectivo';
 import { aIsoNegocio, finDePrueba } from './fechas';
 import type {
@@ -56,16 +57,7 @@ export class SuscripcionesService {
     usuario: Pick<Usuario, 'id' | 'createdAt'>,
     ahora: Date = new Date(),
   ): Promise<SuscripcionSnapshot> {
-    let fila = await this.buscarPorUsuario(usuario.id);
-    if (!fila) {
-      await this.crearPrueba(usuario.id, usuario.createdAt);
-      fila = await this.buscarPorUsuario(usuario.id);
-    }
-    if (!fila) {
-      throw new Error(
-        `No se pudo obtener ni crear la suscripción del usuario ${usuario.id}`,
-      );
-    }
+    const fila = await this.obtenerFila(usuario);
 
     const efectivo = estadoEfectivo(fila, ahora);
     const esActiva = efectivo.estado === 'activa';
@@ -87,6 +79,51 @@ export class SuscripcionesService {
       ahora_servidor: aIsoNegocio(ahora),
       historial: await this.historial(usuario.id),
     };
+  }
+
+  /**
+   * `true` si el estado efectivo de la cuenta bloquea las escrituras
+   * (`prueba_vencida`, `vencida`, `pago_en_proceso`). Una sola consulta (por el
+   * UNIQUE de `usuario_id`), sin cargar el historial. `ahora` es siempre la
+   * hora del servidor; nunca la del teléfono ni una ventana de tolerancia.
+   */
+  async estaBloqueada(
+    usuario: Pick<Usuario, 'id' | 'createdAt'>,
+    ahora: Date = new Date(),
+  ): Promise<boolean> {
+    const fila = await this.obtenerFila(usuario);
+    return esEstadoBloqueado(estadoEfectivo(fila, ahora).estado);
+  }
+
+  /** Lanza 403 `SUSCRIPCION_REQUERIDA` si la cuenta está bloqueada. */
+  async assertPuedeEscribir(
+    usuario: Pick<Usuario, 'id' | 'createdAt'>,
+    ahora: Date = new Date(),
+  ): Promise<void> {
+    if (await this.estaBloqueada(usuario, ahora)) {
+      throw new ForbiddenException(MENSAJE_SUSCRIPCION_REQUERIDA);
+    }
+  }
+
+  /**
+   * Fila de la cuenta; si no existe (carrera con el registro o error al
+   * crearla) la repara con `crearPrueba(usuario.id, usuario.createdAt)` y
+   * vuelve a leer.
+   */
+  private async obtenerFila(
+    usuario: Pick<Usuario, 'id' | 'createdAt'>,
+  ): Promise<Suscripcion> {
+    let fila = await this.buscarPorUsuario(usuario.id);
+    if (!fila) {
+      await this.crearPrueba(usuario.id, usuario.createdAt);
+      fila = await this.buscarPorUsuario(usuario.id);
+    }
+    if (!fila) {
+      throw new Error(
+        `No se pudo obtener ni crear la suscripción del usuario ${usuario.id}`,
+      );
+    }
+    return fila;
   }
 
   /**

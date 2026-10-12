@@ -326,25 +326,17 @@ Errores: `401` (lo maneja `authenticatedRequest`: refresca y reintenta). Un `5xx
 - **No se bloquean:** `GET /productos`, `GET /productos/catalogo` (la búsqueda de `/buscar-producto` debe
   seguir funcionando para la venta en curso), `GET /reportes/*`, `GET /me`, `GET /me/suscripcion`, los
   endpoints de auth y los de compra.
-- **Excepción `borrador_iniciado_en`** (solo `POST /tickets`): body opcional
-
-```json
-{
-  "items": [{ "producto_id": "0b6f2c1e-9f7a-4d1e-8d52-3a1c9f4e7b10", "cantidad": 2 }],
-  "borrador_iniciado_en": "2026-03-17T00:05:00-06:00"
-}
-```
-
-  Regla: la venta se acepta aunque la cuenta esté bloqueada si `borrador_iniciado_en` es anterior al
-  momento del bloqueo (`bloqueo_desde`) y todo cae dentro de la ventana
-  `VENTANA_BORRADOR_HORAS` (propuesta: 24 h; a definir):
-  `bloqueo_desde − ventana ≤ borrador_iniciado_en < bloqueo_desde` y `ahora ≤ bloqueo_desde + ventana`.
-  `bloqueo_desde` = `prueba_fin` (prueba vencida), `acceso_hasta` (cancelada vencida) o `estado_desde`
-  (cobro fallido, reembolso, pago en proceso). Un `borrador_iniciado_en` futuro o con formato inválido
-  da 400 (`@IsOptional @IsISO8601`). Como el guard corre antes que el `ValidationPipe`, la excepción se
-  evalúa en `TicketsService` (con el DTO ya validado), no en un guard.
-- Hasta que el DTO lo acepte, el frontend no lo envía (`ENVIAR_BORRADOR_INICIADO_EN = false` en
-  `shared/api/tickets.ts`, porque `forbidNonWhitelisted` daría 400 a todas las ventas).
+- **No hay excepción de "venta en curso"** (decisión del dueño del producto, 2026-10-12): no existe
+  `borrador_iniciado_en` ni ventana de tolerancia. Solo cuenta el estado efectivo calculado con la hora del
+  servidor al recibir la petición: un ticket empezado el lunes a las 23:50 y guardado el martes a las 00:05
+  con la prueba vencida el lunes a las 23:59:59 da 403; para guardarlo hay que pagar primero. El ticket a
+  medias no se pierde: el borrador queda en el teléfono (AsyncStorage) y se guarda después de pagar. Con
+  `forbidNonWhitelisted`, un `borrador_iniciado_en` en el body da 400.
+- **Implementación:** `SuscripcionActivaGuard` (después de `JwtAuthGuard`, lee `request.user`) en
+  `POST /tickets` y `POST/PATCH/DELETE /productos`. Lanza la `ForbiddenException`; nunca devuelve `false`
+  (Nest respondería "Forbidden resource" y el cliente no reconocería el código). Como el guard corre antes que
+  `ParseUUIDPipe` y que el `ValidationPipe`, una cuenta bloqueada recibe 403 aunque el `:id` o el body sean
+  inválidos (orden 403 → validación).
 
 ### 2.7 `ahora_servidor`
 
@@ -410,7 +402,7 @@ usuarios (1) ──────── (1) suscripciones
 | `renovacion_automatica` | `boolean` | NOT NULL | `false` | |
 | `tienda` | `varchar(20)` | NULL | — | `CHK_suscripciones_tienda` CHECK (`tienda IN ('google_play','app_store')`) (varchar con CHECK, no enum, para no romper el contrato del frontend) |
 | `motivo` | `varchar(20)` | NULL | — | `CHK_suscripciones_motivo` IN (`prueba_terminada`,`cancelada`,`cobro_fallido`,`reembolso`) |
-| `estado_desde` | `timestamptz` | NOT NULL | `now()` | Momento del último cambio de `estado`; base de `bloqueo_desde` y de la ventana de `borrador_iniciado_en` |
+| `estado_desde` | `timestamptz` | NOT NULL | `now()` | Momento del último cambio de `estado` |
 | `created_at` | `timestamptz` | NOT NULL | `now()` | |
 | `updated_at` | `timestamptz` | NOT NULL | `now()` | |
 
@@ -556,7 +548,6 @@ como ya se hace con las demás.
 | `PUBSUB_PUSH_AUDIENCIA` | Audiencia esperada del token OIDC que Pub/Sub adjunta al push de RTDN |
 | `PUBSUB_PUSH_EMAIL` | Correo de la cuenta de servicio que firma el push (se compara con el token) |
 | `SUSCRIPCION_HMAC_SECRETO` | Secreto del HMAC-SHA256 de `cuenta_ofuscada`. No se rota |
-| `VENTANA_BORRADOR_HORAS` | Ventana de la excepción `borrador_iniciado_en` (por defecto 24) |
 
 Los nombres de las variables de Google/Pub/Sub se confirman en la etapa que las usa, según lo que pida la
 librería de cliente elegida (verificar en la documentación oficial).
@@ -719,64 +710,40 @@ register y `GET /me`. Conectar el frontend a la lectura real.
 
 ### Etapa 3. Bloqueo en el servidor
 
+**Estado: HECHA (2026-10-12).** Ver las filas "Etapa 3" de la sección 8: el dueño del producto eliminó la
+excepción de venta en curso, así que no hay `borrador_iniciado_en`, ventana ni `VENTANA_BORRADOR_HORAS`.
+
 **Objetivo.** Rechazar con `403 SUSCRIPCION_REQUERIDA` las escrituras de tickets y productos cuando el
-estado efectivo es E3, E7 o E8, con la excepción de la venta en curso (`borrador_iniciado_en`).
+estado efectivo es E3, E7 o E8 (`prueba_vencida`, `vencida`, `pago_en_proceso`), sin excepciones y con la hora
+del servidor.
 
-**Analizar.**
-- Backend: `src/tickets/` (controller, `tickets.service.ts`, `dto/create-ticket.dto.ts`,
-  `tickets.module.ts`); `src/productos/` (controller, service, DTO, módulo);
-  `src/reportes/` (confirmar que no se toca); `src/main.ts` (formato de error).
-- Frontend: `src/shared/api/tickets.ts` (`ENVIAR_BORRADOR_INICIADO_EN`, `createTicket`);
-  `src/features/ticket/BuscarProductoScreen.tsx` (`handleConfirmGuardar`, 403, modo 4.4);
-  `src/features/ticket/hooks/useTicketDraft.ts` (`iniciadoEn`); `src/features/productos/` (no maneja el
-  403 de forma específica).
+**Desarrollar (lo implementado).**
+1. `src/suscripciones/bloqueo.ts`: `MENSAJE_SUSCRIPCION_REQUERIDA`, `ESTADOS_BLOQUEADOS`,
+   `esEstadoBloqueado(estado)` (funciones puras).
+2. `SuscripcionesService.estaBloqueada(usuario, ahora?)` y `assertPuedeEscribir(usuario, ahora?)` (lanza
+   `ForbiddenException(MENSAJE_SUSCRIPCION_REQUERIDA)`). Una sola consulta por `usuario_id`; repara la
+   cuenta sin fila con el helper privado `obtenerFila` (compartido con `snapshot()`).
+3. `SuscripcionActivaGuard` (`src/suscripciones/guards/`), exportado por `SuscripcionesModule`. Se aplica
+   con `@UseGuards(JwtAuthGuard, SuscripcionActivaGuard)` en `POST /tickets` y en `POST`, `PATCH` y `DELETE`
+   de `/productos`. `TicketsModule` y `ProductosModule` importan `SuscripcionesModule`. `CreateTicketDto`,
+   `TicketsService` y la firma de `create` no cambian.
+4. Tests: `bloqueo.spec.ts`, `suscripciones.service.spec.ts`, `suscripcion-activa.guard.spec.ts` y
+   `test/suscripcion-bloqueo.e2e-spec.ts` (Postgres real, con `configureApp(app)`).
 
-**Desarrollar.**
-1. `SuscripcionesService.estaBloqueada(usuarioId)` y
-   `assertPuedeEscribir(usuarioId, { borradorIniciadoEn? })` que lanza
-   `ForbiddenException('SUSCRIPCION_REQUERIDA: tu suscripción no está activa')`. Calcula
-   `bloqueo_desde` y aplica la ventana de la sección 2.6 (`VENTANA_BORRADOR_HORAS`, por defecto 24).
-2. `SuscripcionActivaGuard` (se ejecuta después de `JwtAuthGuard`, usa `request.user`) para
-   `POST /productos`, `PATCH /productos/:id`, `DELETE /productos/:id`. **No** se aplica a los `GET` de
-   productos ni a reportes.
-3. `POST /tickets`: no usa el guard (los guards corren antes del pipe y no ven el body validado); llama a
-   `assertPuedeEscribir` desde `TicketsService.create` con `dto.borrador_iniciado_en`. `CreateTicketDto`
-   añade `borrador_iniciado_en?: string` con `@IsOptional() @IsISO8601()`. `TicketsModule` y
-   `ProductosModule` importan `SuscripcionesModule`.
-4. Tests unitarios (estados bloqueados y no bloqueados; ventana con límites exactos; borrador futuro
-   da 400) y e2e (prueba vencida: `POST /tickets` 403 y `POST /productos` 403 con el mensaje exacto;
-   `GET /reportes/*` 200; con `borrador_iniciado_en` dentro de ventana 201).
-5. **Orden de despliegue:** el backend con el DTO nuevo se despliega **antes** de activar la constante
-   del frontend.
-
-**Integrar con el frontend.**
-- `src/shared/api/tickets.ts`: `ENVIAR_BORRADOR_INICIADO_EN = true`.
-- Probar la venta en curso en `BuscarProductoScreen` y `useTicketDraft`: armar un ticket, forzar el
-  bloqueo en base de datos (mover `prueba_fin` justo después de `iniciadoEn`) y guardar; debe aceptarse
-  dentro de la ventana y rechazarse fuera de ella (el cliente conserva el borrador y llama a
-  `refreshSubscription`).
-- Opcional: manejo específico del 403 en `features/productos` (pendiente 16 del README del frontend).
-
-**Pruebas manuales.**
-- `UPDATE suscripciones SET prueba_fin = now() - interval '1 hour' WHERE usuario_id = '<id>';` y luego
-  `curl -i -X POST /tickets …` → `403` con `SUSCRIPCION_REQUERIDA: tu suscripción no está activa`.
-- Mismo `POST /tickets` con `"borrador_iniciado_en"` anterior al bloqueo y dentro de 24 h → `201`.
-- `GET /reportes/...` → `200` con la cuenta bloqueada.
-- En la app: el mensaje 403 aparece en el modal "¿Desea guardar el ticket?" con el código incluido.
+**Frontend.** `createTicket` vuelve a enviar solo `{ items }`; se borra el código de `borrador_iniciado_en`
+(`ENVIAR_BORRADOR_INICIADO_EN`, `iniciadoEn`); el aviso 4.4 muestra "Pagar" y "Descartar" (sin "Guardar");
+productos refresca la suscripción ante el 403 y conserva su mensaje.
 
 **Criterios de aceptación.**
-- Estados `prueba_vencida`, `vencida` y `pago_en_proceso` rechazan `POST /tickets` y `POST/PATCH/DELETE
-  /productos` con `403` y el mensaje fijado; `prueba`, `activa` y `cancelada` vigente no.
-- Los `GET` de productos y todos los reportes funcionan siempre.
-- `POST /tickets` acepta `borrador_iniciado_en` y no devuelve 400 a un body sin él.
-- La ventana se aplica por ambos lados y es configurable por `VENTANA_BORRADOR_HORAS`.
-- Los tests existentes de tickets y productos siguen en verde.
+- `prueba_vencida`, `vencida` y `pago_en_proceso` rechazan `POST /tickets` y `POST/PATCH/DELETE /productos`
+  con `403` y el mensaje fijado; `prueba`, `activa` y `cancelada` vigente no.
+- Los `GET` de productos, los reportes, `GET /me`, `GET /me/suscripcion` y auth no se bloquean.
+- Al volver a `activa` se desbloquea sin pasos extra.
 
-**Fuera de alcance.** Compras, RTDN, mocks, manejo de UI del 403 en Productos (salvo lo opcional).
+**Fuera de alcance.** Compras, RTDN, mocks, migraciones y variables de entorno nuevas.
 
-**Documentación a actualizar.** READMEs de `src/tickets` y `src/productos` (403 y
-`borrador_iniciado_en`), `src/suscripciones`; `.env.example` (`VENTANA_BORRADOR_HORAS`); `CLAUDE.md` del
-backend con `claude-md-sync`; frontend: README de suscripción (secciones b y j: 403 y borrador conectados).
+**Documentación actualizada.** READMEs de `src/tickets`, `src/productos` y `src/suscripciones`; frontend:
+README de suscripción (secciones b, c, i, j y Checklist), de ticket, de productos y `shared`.
 
 ### Etapa 4. Compra con Google Play
 
@@ -1128,3 +1095,15 @@ Fuera de las etapas actuales. La columna `tienda` conserva `varchar` con CHECK (
 | 2026-10-12 | Etapa 2: el e2e (`test/suscripcion-lectura.e2e-spec.ts`) no llama a `POST /auth/register` (throttle de 3 cada 30 minutos); register queda cubierto por los unitarios de `auth.service.spec.ts`. Sí usa `POST /auth/login` (2 llamadas, bajo el límite de 5/min). |
 | 2026-10-12 | Etapa 2 (desviación menor): para simular una prueba vencida, el e2e y la prueba manual mueven `prueba_inicio` a `now() - 15 days` además de `prueba_fin` a `now() - 1 hour`, porque `CHK_suscripciones_prueba` exige `prueba_fin > prueba_inicio` y la cuenta se acaba de crear. El plan decía solo `prueba_fin`. |
 | 2026-10-12 | Etapa 2: `prettier --write` sobre los archivos tocados (el repo tiene prettier dentro de eslint); `npm run lint` no se usó. Los 2 errores `_refreshTokenEntity` de `auth.service.ts` siguen sin tocar. |
+| 2026-10-12 | Etapa 3 (decisión del dueño, manda sobre el plan): NO existe la excepción de "venta en curso". Sin ventana de tolerancia, sin `borrador_iniciado_en` y sin `VENTANA_BORRADOR_HORAS`. Si el estado efectivo es bloqueado según la hora del servidor, se rechaza el guardado sin importar cuándo se empezó el ticket (empezado el lunes 23:50, guardado el martes 00:05 con la prueba vencida el lunes 23:59:59 → 403; hay que pagar primero). |
+| 2026-10-12 | Etapa 3 (decisión del dueño): solo cuenta la hora del servidor (`ahora = new Date()` en el servidor), nunca la del teléfono. |
+| 2026-10-12 | Etapa 3 (decisión del dueño): el ticket a medias no se pierde; queda en el teléfono (borrador en AsyncStorage) y se puede guardar después de pagar. |
+| 2026-10-12 | Etapa 3 (decisión del dueño, frontend): el aviso 4.4 "venta en curso" quita "Guardar" y muestra "Pagar" (sale a Vendido y abre la hoja de pago, conservando el borrador); "Descartar" se mantiene. |
+| 2026-10-12 | Etapa 3 (decisión del dueño, frontend): se borra el código que preparaba y enviaba `borrador_iniciado_en` (`ENVIAR_BORRADOR_INICIADO_EN`, `iniciadoEn`/`obtenerIniciadoEn`). Un borrador persistido con el formato viejo `{items, iniciadoEn}` se sigue leyendo (el campo se ignora). |
+| 2026-10-12 | Etapa 3 (decisión del dueño, frontend): gestión mínima del 403 en productos: se conserva el mensaje y se llama a `refreshSubscription({ motivo: 'manual' })`. |
+| 2026-10-12 | Etapa 3 (cambia el plan): `POST /tickets` también usa `SuscripcionActivaGuard`. El plan lo evaluaba dentro de `TicketsService.create` solo porque la excepción dependía del body; sin la excepción ya no aplica. `CreateTicketDto`, `TicketsService` y la firma de `create` no cambian. |
+| 2026-10-12 | Etapa 3 (firmas reales): `esEstadoBloqueado(estado: EstadoSuscripcionServidor): boolean`; `estaBloqueada(usuario: Pick<Usuario,'id'\|'createdAt'>, ahora = new Date()): Promise<boolean>`; `assertPuedeEscribir(usuario, ahora = new Date()): Promise<void>` (en el plan recibían `usuarioId`; se recibe el usuario para poder reparar la cuenta sin fila con `createdAt`). `SuscripcionActivaGuard` lee `request.user` y lanza 401 si falta. |
+| 2026-10-12 | Etapa 3: el guard lo exporta `SuscripcionesModule` (no se declara como provider en cada módulo consumidor); `TicketsModule` y `ProductosModule` importan `SuscripcionesModule`. |
+| 2026-10-12 | Etapa 3: el guard corre antes que `ParseUUIDPipe` y que el `ValidationPipe`: una cuenta bloqueada recibe 403 aunque el `:id` o el body sean inválidos. Aceptado. |
+| 2026-10-12 | Etapa 3: `src/main.ts` solo llama a `bootstrap()` con `if (require.main === module)`. `test/body-limit.e2e-spec.ts` y el nuevo e2e importan `configureApp` de `main.ts`, y cada import abría un servidor real en el puerto 3000: dos suites en paralelo daban `EADDRINUSE`. Sin cambio de comportamiento con `nest start`. |
+| 2026-10-12 | Etapa 3: no hay migraciones, ni paquetes, ni variables de entorno nuevas (`.env.example` sin cambios). |

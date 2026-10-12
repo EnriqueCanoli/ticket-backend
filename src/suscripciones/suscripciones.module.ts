@@ -5,13 +5,16 @@ import { Compra } from './entities/compra.entity';
 import { PagoHistorial } from './entities/pago-historial.entity';
 import { EventoTienda } from './entities/evento-tienda.entity';
 import { SuscripcionesController } from './suscripciones.controller';
+import { SuscripcionActivaGuard } from './guards/suscripcion-activa.guard';
 import { SuscripcionesService } from './suscripciones.service';
 
 /**
  * Expone GET /me/suscripcion (etapa 2). No importa `AuthModule` a propósito:
  * `AuthModule` importa este módulo, y lo contrario crearía un ciclo. El
  * controller usa `JwtAuthGuard` y `CurrentUser` importándolos por archivo,
- * igual que `ProductosModule`.
+ * igual que `ProductosModule`. Exporta también `SuscripcionActivaGuard`
+ * (etapa 3): los módulos de tickets y productos importan este módulo y lo
+ * usan con `@UseGuards(JwtAuthGuard, SuscripcionActivaGuard)`.
  */
 @Module({
   imports: [
@@ -23,7 +26,7 @@ import { SuscripcionesService } from './suscripciones.service';
     ]),
   ],
   controllers: [SuscripcionesController],
-  providers: [SuscripcionesService],
-  exports: [SuscripcionesService],
+  providers: [SuscripcionesService, SuscripcionActivaGuard],
+  exports: [SuscripcionesService, SuscripcionActivaGuard],
 })
 export class SuscripcionesModule {}

@@ -112,7 +112,19 @@ rutas con `:id`.
   `ticket_items.producto_id ... ON DELETE RESTRICT`.
 - Respuesta `200` — `ProductoDeleteResponse`: `{ id, activo }` (siempre `activo: false` en éxito).
   No usa `204`.
-- Errores: `400` (UUID inválido), `401`, `404` (genérico, 3 causas incluyendo double-delete).
+- Errores: `400` (UUID inválido), `401`, `403` (suscripción no activa, ver abajo), `404` (genérico, 3 causas incluyendo double-delete).
+
+### Bloqueo por suscripción (etapa 3)
+
+`POST /productos`, `PATCH /productos/:id` y `DELETE /productos/:id` llevan
+`@UseGuards(JwtAuthGuard, SuscripcionActivaGuard)` y responden `403`
+`{ statusCode: 403, message: 'SUSCRIPCION_REQUERIDA: tu suscripción no está activa', error: 'Forbidden' }`
+cuando el estado efectivo es `prueba_vencida`, `vencida` o `pago_en_proceso` (hora del servidor, sin
+ventana de tolerancia). `GET /productos` y `GET /productos/catalogo` **siguen libres** (la búsqueda y el
+catálogo funcionan con la cuenta bloqueada). `ProductosModule` importa `SuscripcionesModule`.
+
+El guard corre antes que `ParseUUIDPipe` y que el `ValidationPipe`, así que una cuenta bloqueada recibe
+`403` aunque el `:id` o el body sean inválidos. Es aceptable.
 
 ### Formato de errores
 
