@@ -7,6 +7,10 @@ import { Ticket } from '../tickets/entities/ticket.entity';
 import { TicketItem } from '../tickets/entities/ticket-item.entity';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
 import { PasswordResetToken } from '../auth/entities/password-reset-token.entity';
+import { Suscripcion } from '../suscripciones/entities/suscripcion.entity';
+import { Compra } from '../suscripciones/entities/compra.entity';
+import { PagoHistorial } from '../suscripciones/entities/pago-historial.entity';
+import { EventoTienda } from '../suscripciones/entities/evento-tienda.entity';
 
 /**
  * DataSource standalone usado por el CLI de migraciones de TypeORM
@@ -32,6 +36,10 @@ export const dataSourceOptions: DataSourceOptions = {
     TicketItem,
     RefreshToken,
     PasswordResetToken,
+    Suscripcion,
+    Compra,
+    PagoHistorial,
+    EventoTienda,
   ],
   migrations: [__dirname + '/migrations/*.{ts,js}'],
   synchronize: false,

@@ -85,6 +85,17 @@ No hay endpoint de borrado de cuenta hoy (ni controller en `usuarios/` ni métod
 | `productos.usuario_id → usuarios.id` | **sin especificar → default `NO ACTION`** | `IDX_productos_usuario_id` |
 | `refresh_tokens.usuario_id → usuarios.id` | **`ON DELETE CASCADE`** | `IDX_refresh_tokens_usuario_id` |
 | `password_reset_tokens.usuario_id → usuarios.id` (`FK_password_reset_tokens_usuario_id`) | **`ON DELETE CASCADE`** | `IDX_password_reset_tokens_usuario_id` |
+| `suscripciones.usuario_id → usuarios.id` (`FK_suscripciones_usuario_id`) | **`ON DELETE CASCADE`** (además `UQ_suscripciones_usuario_id`: 1 a 1) | el propio UNIQUE |
+| `compras.usuario_id → usuarios.id` (`FK_compras_usuario_id`) | **`ON DELETE CASCADE`** | `IDX_compras_usuario_id` |
+| `pagos_historial.usuario_id → usuarios.id` (`FK_pagos_historial_usuario_id`) | **`ON DELETE CASCADE`** | `IDX_pagos_historial_usuario_cobrado` (`usuario_id`, `cobrado_en` DESC) |
+| `eventos_tienda.usuario_id → usuarios.id` (`FK_eventos_tienda_usuario_id`) | **`ON DELETE SET NULL`** (columna nullable: el evento se conserva) | — |
+
+Las cuatro tablas de la suscripción (`src/suscripciones/`, migración `CreateSuscripcionesTables`)
+siguen el criterio de las desechables/derivadas de la cuenta: cascada, salvo `eventos_tienda`, que
+usa `SET NULL` porque es una bitácora que no debe perderse con la cuenta. **`Usuario` no declara
+relación inversa** (`@OneToOne`/`@OneToMany`) hacia ninguna de ellas: las relaciones viven solo en
+las entidades hijas. Añadirla rompería `buildUsuario()` de `auth.service.spec.ts`, porque `tsc`
+compila también los specs y ese helper devuelve un `Usuario` literal.
 
 El modelo queda asimétrico a propósito por consecuencia del diseño (no hay comentario explícito que
 lo declare, pero se deduce): las sesiones (`refresh_tokens`) y los códigos de recuperación

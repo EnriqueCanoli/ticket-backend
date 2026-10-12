@@ -15,6 +15,11 @@ import { Ticket } from './tickets/entities/ticket.entity';
 import { TicketItem } from './tickets/entities/ticket-item.entity';
 import { RefreshToken } from './auth/entities/refresh-token.entity';
 import { PasswordResetToken } from './auth/entities/password-reset-token.entity';
+import { Suscripcion } from './suscripciones/entities/suscripcion.entity';
+import { Compra } from './suscripciones/entities/compra.entity';
+import { PagoHistorial } from './suscripciones/entities/pago-historial.entity';
+import { EventoTienda } from './suscripciones/entities/evento-tienda.entity';
+import { SuscripcionesModule } from './suscripciones/suscripciones.module';
 
 @Module({
   imports: [
@@ -48,6 +53,10 @@ import { PasswordResetToken } from './auth/entities/password-reset-token.entity'
           TicketItem,
           RefreshToken,
           PasswordResetToken,
+          Suscripcion,
+          Compra,
+          PagoHistorial,
+          EventoTienda,
         ],
         synchronize: false,
         uuidExtension: 'pgcrypto',
@@ -61,6 +70,7 @@ import { PasswordResetToken } from './auth/entities/password-reset-token.entity'
     ProductosModule,
     TicketsModule,
     ReportesModule,
+    SuscripcionesModule,
   ],
   controllers: [AppController],
   providers: [

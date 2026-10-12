@@ -44,6 +44,15 @@ Sin prefijo global de rutas (`@Controller()` vacío en `auth.controller.ts`).
       existe'`**. No hay pre-check de teléfono — el único guardrail contra phone duplicado es la
       constraint de BD atrapada por este catch.
   - `429` throttler.
+- **Alta de la prueba de suscripción:** el `save()` del usuario va dentro de una transacción
+  (`usuarioRepository.manager.transaction`) junto con `SuscripcionesService.crearPrueba(usuario.id,
+  usuario.createdAt, manager)`, que inserta la fila de `suscripciones` (prueba de 14 días,
+  `prueba_inicio = usuario.createdAt`). Es todo o nada: no queda una cuenta sin suscripción ni una
+  suscripción sin cuenta. La transacción está **dentro** del mismo `try/catch` de arriba, así que
+  la traducción del `23505` a `409` no cambia. La forma de la respuesta de `register` no cambia
+  (el campo `suscripcion` llega en la etapa 2). Dependencia nueva: `AuthModule` importa
+  `SuscripcionesModule` y `AuthService` inyecta `SuscripcionesService` (último parámetro del
+  constructor). Ver `src/suscripciones/README.md`.
 
 ### `POST /auth/login`
 

@@ -61,6 +61,7 @@ interface Mocks {
   manager: Manager;
   jwtService: { signAsync: jest.Mock };
   mailService: { sendPasswordResetCode: jest.Mock };
+  suscripcionesService: { crearPrueba: jest.Mock };
 }
 
 function buildService(): { service: AuthService; mocks: Mocks } {
@@ -114,6 +115,9 @@ function buildService(): { service: AuthService; mocks: Mocks } {
     mailService: {
       sendPasswordResetCode: jest.fn().mockResolvedValue(undefined),
     },
+    suscripcionesService: {
+      crearPrueba: jest.fn().mockResolvedValue(undefined),
+    },
   };
 
   const configService = {
@@ -127,6 +131,7 @@ function buildService(): { service: AuthService; mocks: Mocks } {
     mocks.jwtService as never,
     configService as never,
     mocks.mailService as never,
+    mocks.suscripcionesService as never,
   );
 
   return { service, mocks };
@@ -409,7 +414,7 @@ describe('AuthService: claim `tv` en el access token (issueTokenPair)', () => {
 
   it('register crea el usuario con tokenVersion 0 y firma tv: 0', async () => {
     mocks.usuarioRepository.findOne.mockResolvedValue(null);
-    mocks.usuarioRepository.save.mockImplementation((u: Usuario) => {
+    mocks.manager.save.mockImplementation((u: Usuario) => {
       u.id = 'nuevo-id';
       return Promise.resolve(u);
     });
@@ -427,6 +432,30 @@ describe('AuthService: claim `tv` en el access token (issueTokenPair)', () => {
     expect(mocks.jwtService.signAsync).toHaveBeenCalledWith(
       { sub: 'nuevo-id', email: 'nuevo@example.com', tv: 0 },
       expect.any(Object),
+    );
+  });
+
+  it('register crea la prueba de 14 días en la misma transacción que el usuario', async () => {
+    const createdAt = new Date('2026-03-03T15:12:00Z');
+    mocks.usuarioRepository.findOne.mockResolvedValue(null);
+    mocks.manager.save.mockImplementation((u: Usuario) => {
+      u.id = 'nuevo-id';
+      u.createdAt = createdAt;
+      return Promise.resolve(u);
+    });
+
+    await service.register({
+      email: 'nuevo@example.com',
+      password: PASSWORD,
+      phone: '5512345678',
+      aceptoTerminos: true,
+    });
+
+    expect(mocks.manager.transaction).toHaveBeenCalledTimes(1);
+    expect(mocks.suscripcionesService.crearPrueba).toHaveBeenCalledWith(
+      'nuevo-id',
+      createdAt,
+      mocks.manager,
     );
   });
 });

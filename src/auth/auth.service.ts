@@ -14,6 +14,7 @@ import * as bcrypt from 'bcryptjs';
 import { Usuario } from '../usuarios/entities/usuario.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
+import { SuscripcionesService } from '../suscripciones/suscripciones.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -113,6 +114,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly mailService: MailService,
+    private readonly suscripcionesService: SuscripcionesService,
   ) {
     this.accessTokenTtlSeconds = parseInt(
       this.configService.get<string>('ACCESS_TOKEN_TTL', '900'),
@@ -162,7 +164,17 @@ export class AuthService {
       tokenVersion: 0,
     });
     try {
-      await this.usuarioRepository.save(usuario);
+      // Usuario y prueba de 14 días se crean en la misma transacción: no
+      // puede quedar una cuenta sin suscripción por un fallo a medias.
+      // `usuario.createdAt` lo rellena el save() y es la `prueba_inicio`.
+      await this.usuarioRepository.manager.transaction(async (manager) => {
+        await manager.save(usuario);
+        await this.suscripcionesService.crearPrueba(
+          usuario.id,
+          usuario.createdAt,
+          manager,
+        );
+      });
     } catch (error) {
       // Carrera check-then-act: entre el findOne() de arriba y este save(),
       // otra request concurrente pudo insertar el mismo email. El findOne no
