@@ -101,9 +101,14 @@ Sin prefijo global de rutas (`@Controller()` vacío en `auth.controller.ts`).
 ### `GET /me`
 
 - Guard: `JwtAuthGuard`.
-- Éxito `200` — `MeResponse`: `{ id, email, phone, created_at, updated_at, suscripcion? }`.
+- Éxito `200` — `MeResponse`: `{ id, email, phone, created_at, updated_at, cuenta_ofuscada, suscripcion? }`.
   `toMeResponse()` es **async** (calcula el snapshot); `AuthController.me()` devuelve
   `Promise<MeResponse>`.
+- `cuenta_ofuscada` (etapa 4b): string de 64 caracteres hexadecimales, `HMAC-SHA256(usuario.id,
+  SUSCRIPCION_HMAC_SECRETO)` calculado por `CuentaOfuscadaService` (módulo de suscripciones). Solo
+  está en `GET /me` (no en login ni register). La app lo pasa a Google Play como
+  `obfuscatedAccountId` al comprar y el servidor lo compara al validar la compra. Es estable (no se
+  guarda ni se rota) y no expone el `id` real.
 - `401` (formato default de Passport, `{"statusCode":401,"message":"Unauthorized","error":"Unauthorized"}`
   — distinto del mensaje custom de login/refresh) en: header ausente, token mal formado/firma
   inválida, expirado, `sub` del payload ya no existe en `usuarios` (borrado — hoy no hay endpoint

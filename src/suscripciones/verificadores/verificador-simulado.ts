@@ -47,6 +47,7 @@ export class VerificadorSimulado implements VerificadorTienda {
         cuentaOfuscada: null,
         monto: null,
         moneda: null,
+        yaReconocida: false,
       });
     }
 
@@ -62,6 +63,7 @@ export class VerificadorSimulado implements VerificadorTienda {
         cuentaOfuscada: ajena ? CUENTA_SIMULADA_AJENA : null,
         monto: MONTO_SIMULADO,
         moneda: MONEDA_SIMULADA,
+        yaReconocida: false,
       });
     }
 
@@ -74,6 +76,7 @@ export class VerificadorSimulado implements VerificadorTienda {
       cuentaOfuscada: null,
       monto: null,
       moneda: null,
+      yaReconocida: false,
     });
   }
 

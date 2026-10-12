@@ -11,6 +11,8 @@ export interface UserResponse {
 /** Shape de GET /me (incluye `updated_at`, a diferencia de UserResponse). */
 export interface MeResponse extends UserResponse {
   updated_at: Date;
+  /** HMAC-SHA256 hex (64 caracteres) del id; solo en GET /me, no en login ni register. */
+  cuenta_ofuscada: string;
   /** Snapshot de suscripción; se omite si no se pudo calcular. */
   suscripcion?: SuscripcionSnapshot;
 }

@@ -10,11 +10,15 @@ export interface ResultadoVerificacion {
   cuentaOfuscada: string | null;
   monto: number | null;
   moneda: string | null;
+  /** La tienda ya la reconoció (acknowledge); el simulado siempre false. */
+  yaReconocida: boolean;
 }
 
 export interface EntradaVerificacion {
   productoId: string;
   tokenCompra: string;
+  /** Solo para registrar en el log (nunca el token); opcional. */
+  usuarioId?: string;
 }
 
 export interface VerificadorTienda {

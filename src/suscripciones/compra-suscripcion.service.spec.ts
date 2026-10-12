@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { QueryFailedError } from 'typeorm';
 import type { DataSource } from 'typeorm';
 import {
@@ -7,8 +12,13 @@ import {
   MENSAJE_PRODUCTO_INVALIDO,
   MENSAJE_TIENDA_EN_USO,
 } from './compra-suscripcion.service';
+import { MENSAJE_TIENDA_NO_DISPONIBLE } from './verificadores/verificador-google';
 import { Compra } from './entities/compra.entity';
 import { Suscripcion } from './entities/suscripcion.entity';
+import {
+  calcularCuentaOfuscada,
+  CuentaOfuscadaService,
+} from './cuenta-ofuscada';
 import type { SuscripcionesService } from './suscripciones.service';
 import type { ResultadoVerificacion } from './verificadores/verificador-tienda.interface';
 import type { RestaurarComprasDto } from './dto/restaurar-compras.dto';
@@ -24,6 +34,8 @@ const USUARIO = {
 };
 const PRODUCTO = 'PENDIENTE';
 const TOKEN = 'mock-compra-user-1-1';
+const SECRETO = 'secreto-de-prueba-con-mas-de-32-caracteres';
+const CUENTA_PROPIA = calcularCuentaOfuscada('user-1', SECRETO);
 const SNAPSHOT = { estado: 'activa', historial: [] };
 
 function ms(dias: number): Date {
@@ -77,6 +89,7 @@ function activa(
     cuentaOfuscada: null,
     monto: 99,
     moneda: 'MXN',
+    yaReconocida: false,
     ...parcial,
   };
 }
@@ -91,6 +104,7 @@ function pendiente(): ResultadoVerificacion {
     cuentaOfuscada: null,
     monto: null,
     moneda: null,
+    yaReconocida: false,
   };
 }
 
@@ -145,7 +159,14 @@ function build(
     compraRepo as never,
     suscripcionesService as unknown as SuscripcionesService,
     verificador,
-    { validacionTienda: 'simulada', productoSuscripcionId: PRODUCTO },
+    {
+      validacionTienda: 'simulada',
+      productoSuscripcionId: PRODUCTO,
+      paqueteAndroid: null,
+      credencialesGoogle: null,
+      hmacSecreto: SECRETO,
+    },
+    new CuentaOfuscadaService({ hmacSecreto: SECRETO } as never),
   );
   return {
     service,
@@ -240,9 +261,11 @@ describe('CompraSuscripcionService.validarCompra', () => {
     expect(h.dataSource.transaction).not.toHaveBeenCalled();
   });
 
-  it('cuentaOfuscada ajena: 409', async () => {
+  it('cuentaOfuscada ajena (HMAC de otra cuenta): 409', async () => {
     const h = build({
-      verificacion: activa({ cuentaOfuscada: 'otra-cuenta' }),
+      verificacion: activa({
+        cuentaOfuscada: calcularCuentaOfuscada('otro-usuario', SECRETO),
+      }),
     });
     await expect(validar(h.service)).rejects.toThrow(
       new ConflictException(MENSAJE_TIENDA_EN_USO),
@@ -250,9 +273,132 @@ describe('CompraSuscripcionService.validarCompra', () => {
     expect(h.dataSource.transaction).not.toHaveBeenCalled();
   });
 
-  it('cuentaOfuscada igual al usuario no es conflicto', async () => {
-    const h = build({ verificacion: activa({ cuentaOfuscada: USUARIO.id }) });
+  it('cuentaOfuscada igual al HMAC propio acepta', async () => {
+    const h = build({
+      verificacion: activa({ cuentaOfuscada: CUENTA_PROPIA }),
+    });
     await expect(validar(h.service)).resolves.toBe(SNAPSHOT);
+    expect(h.dataSource.transaction).toHaveBeenCalled();
+  });
+
+  it('el id sin ofuscar ya no cuenta como cuenta propia', async () => {
+    const h = build({ verificacion: activa({ cuentaOfuscada: USUARIO.id }) });
+    await expect(validar(h.service)).rejects.toThrow(ConflictException);
+  });
+
+  it('sin cuentaOfuscada (null) acepta y liga a la cuenta que la envía (E8)', async () => {
+    const h = build({ verificacion: activa({ cuentaOfuscada: null }) });
+    await expect(validar(h.service)).resolves.toBe(SNAPSHOT);
+    expect(h.txCompraRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ usuarioId: USUARIO.id }),
+    );
+  });
+
+  it('autoRenovacion=false: activa sin proximo_cobro ni renovación', async () => {
+    const h = build({ verificacion: activa({ autoRenovacion: false }) });
+    await validar(h.service);
+    expect(h.txSuscripcionRepo.update).toHaveBeenCalledWith(
+      { id: 'sus-1' },
+      expect.objectContaining({
+        estado: 'activa',
+        proximoCobro: null,
+        renovacionAutomatica: false,
+      }),
+    );
+  });
+
+  it('yaReconocida: guarda reconocida_en y no llama a reconocer', async () => {
+    const h = build({ verificacion: activa({ yaReconocida: true }) });
+    h.compraRepo.findOne.mockResolvedValueOnce(null).mockResolvedValueOnce(
+      compra({
+        id: 'compra-nueva',
+        estado: 'confirmada',
+        reconocidaEn: new Date(),
+      }),
+    );
+    await validar(h.service);
+    expect(h.txCompraRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ reconocidaEn: expect.any(Date) as Date }),
+    );
+    expect(h.verificador.reconocer).not.toHaveBeenCalled();
+  });
+
+  it('monto o moneda null: inserta 0 con un aviso', async () => {
+    const h = build({ verificacion: activa({ monto: null, moneda: null }) });
+    await validar(h.service);
+    const params = (h.manager.query.mock.calls[0] as [string, unknown[]])[1];
+    expect(params[6]).toBe(0);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('TIENDA_NO_DISPONIBLE: se propaga sin tocar la BD', async () => {
+    const h = build();
+    h.verificador.verificar.mockRejectedValue(
+      new ServiceUnavailableException(MENSAJE_TIENDA_NO_DISPONIBLE),
+    );
+    await expect(validar(h.service)).rejects.toThrow(
+      ServiceUnavailableException,
+    );
+    expect(h.dataSource.transaction).not.toHaveBeenCalled();
+    expect(h.compraRepo.update).not.toHaveBeenCalled();
+  });
+
+  describe('E12: compra propia pendiente que sale rechazada', () => {
+    function preparar(filaDb: Suscripcion, otras = 0) {
+      const h = build({ fila: filaDb, verificacion: rechazada() });
+      const previa = compra({ estado: 'pendiente' });
+      h.compraRepo.findOne.mockResolvedValueOnce(previa);
+      h.txCompraRepo.findOne.mockResolvedValue(previa);
+      const txCompra = Object.assign(h.txCompraRepo, {
+        update: jest.fn().mockResolvedValue(undefined),
+        count: jest.fn().mockResolvedValue(otras),
+      });
+      return { ...h, txCompra };
+    }
+
+    it('nunca pagó: expirada y vuelve a prueba_vencida / prueba_terminada', async () => {
+      const h = preparar(fila({ estado: 'pago_en_proceso' }));
+      await expect(validar(h.service)).rejects.toThrow(
+        new BadRequestException(MENSAJE_COMPRA_RECHAZADA),
+      );
+      expect(h.txCompra.update).toHaveBeenCalledWith(
+        { id: 'compra-1' },
+        { estado: 'expirada' },
+      );
+      expect(h.txSuscripcionRepo.update).toHaveBeenCalledWith(
+        { id: 'sus-1' },
+        expect.objectContaining({
+          estado: 'prueba_vencida',
+          motivo: 'prueba_terminada',
+          estadoDesde: expect.any(Date) as Date,
+        }),
+      );
+    });
+
+    it('ya había pagado: vuelve a vencida / cancelada', async () => {
+      const h = preparar(
+        fila({ estado: 'pago_en_proceso', accesoHasta: ms(-3) }),
+      );
+      await expect(validar(h.service)).rejects.toThrow(BadRequestException);
+      expect(h.txSuscripcionRepo.update).toHaveBeenCalledWith(
+        { id: 'sus-1' },
+        expect.objectContaining({ estado: 'vencida', motivo: 'cancelada' }),
+      );
+    });
+
+    it('si queda otra compra pendiente, no cambia la suscripción', async () => {
+      const h = preparar(fila({ estado: 'pago_en_proceso' }), 1);
+      await expect(validar(h.service)).rejects.toThrow(BadRequestException);
+      expect(h.txCompra.update).toHaveBeenCalled();
+      expect(h.txSuscripcionRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('si la cuenta no estaba en pago_en_proceso, solo expira la compra', async () => {
+      const h = preparar(fila({ estado: 'prueba' }));
+      await expect(validar(h.service)).rejects.toThrow(BadRequestException);
+      expect(h.txCompra.update).toHaveBeenCalled();
+      expect(h.txSuscripcionRepo.update).not.toHaveBeenCalled();
+    });
   });
 
   it('activa sobre prueba vencida: bloquea la fila, crea compra y pago, actualiza la suscripción y reconoce', async () => {

@@ -10,6 +10,7 @@ import { DataSource, QueryFailedError, Repository } from 'typeorm';
 import { Usuario } from '../usuarios/entities/usuario.entity';
 import { CONFIG_SUSCRIPCION } from './config-suscripcion';
 import type { ConfigSuscripcion } from './config-suscripcion';
+import { CuentaOfuscadaService } from './cuenta-ofuscada';
 import type { RestaurarComprasDto } from './dto/restaurar-compras.dto';
 import type { ValidarCompraDto } from './dto/validar-compra.dto';
 import { Compra } from './entities/compra.entity';
@@ -58,6 +59,7 @@ export class CompraSuscripcionService {
     private readonly verificador: VerificadorTienda,
     @Inject(CONFIG_SUSCRIPCION)
     private readonly config: ConfigSuscripcion,
+    private readonly cuentaOfuscada: CuentaOfuscadaService,
   ) {}
 
   async validarCompra(
@@ -140,19 +142,28 @@ export class CompraSuscripcionService {
     }
 
     // La consulta a la tienda va FUERA de la transacción (no retiene el lock).
+    // Un TIENDA_NO_DISPONIBLE (503) sale de aquí sin tocar la BD.
     const resultado = await this.verificador.verificar({
       productoId,
       tokenCompra: token,
+      usuarioId: usuario.id,
     });
     if (resultado.estado === 'rechazada') {
+      if (existente) {
+        // E12: una compra propia pendiente que la tienda cancela deja de
+        // estar pendiente y, si era lo que mantenía la cuenta en
+        // pago_en_proceso, la saca de ahí.
+        await this.expirarPendiente(usuario, existente, ahora);
+      }
       throw new BadRequestException(MENSAJE_COMPRA_RECHAZADA);
     }
     if (
       resultado.cuentaOfuscada !== null &&
-      resultado.cuentaOfuscada !== usuario.id
+      resultado.cuentaOfuscada !== this.cuentaOfuscada.calcular(usuario.id)
     ) {
-      // 4a: se compara con usuario.id (el frontend usa getMe().id como
-      // cuentaId); en la 4b será el HMAC de cuenta_ofuscada.
+      // La compra se hizo con la `cuenta_ofuscada` de otra cuenta de la app
+      // (HMAC del id de usuario). Sin identificador (null) se acepta y se
+      // liga a quien la envía (E8).
       throw new ConflictException(MENSAJE_TIENDA_EN_USO);
     }
     if (
@@ -213,6 +224,10 @@ export class CompraSuscripcionService {
           compra.estado = estado;
           compra.periodoInicio = resultado.periodoInicio;
           compra.periodoFin = resultado.periodoFin;
+          if (estado === 'confirmada' && resultado.yaReconocida) {
+            // La tienda ya la reconoció: no hace falta llamar a `reconocer`.
+            compra.reconocidaEn = compra.reconocidaEn ?? ahora;
+          }
           return compraRepo.save(compra);
         };
 
@@ -229,6 +244,13 @@ export class CompraSuscripcionService {
           const periodoInicio = resultado.periodoInicio as Date;
           const periodoFin = resultado.periodoFin as Date;
           const compra = await guardarCompra('confirmada');
+          if (resultado.monto === null || resultado.moneda === null) {
+            // El CHECK de `pagos_historial` exige monto >= 0 y moneda: sin
+            // dato de la tienda se inserta 0 (y la moneda por defecto).
+            this.logger.warn(
+              `Pago del usuario ${usuario.id} sin monto o moneda de la tienda (orderId ${resultado.orderId}): se registra 0`,
+            );
+          }
           await manager.query(
             `INSERT INTO "pagos_historial"
                ("usuario_id", "compra_id", "tienda", "external_id", "periodo",
@@ -251,8 +273,8 @@ export class CompraSuscripcionService {
             {
               estado: 'activa',
               accesoHasta: periodoFin,
-              proximoCobro: periodoFin,
-              renovacionAutomatica: true,
+              proximoCobro: resultado.autoRenovacion ? periodoFin : null,
+              renovacionAutomatica: resultado.autoRenovacion,
               tienda: 'google_play',
               motivo: null,
               ...(fila.estado !== 'activa' ? { estadoDesde: ahora } : {}),
@@ -301,6 +323,49 @@ export class CompraSuscripcionService {
       if (compra) await this.reconocerSiHaceFalta(compra);
     }
     return salida.resultado;
+  }
+
+  /**
+   * E12: pasa a `expirada` una compra propia pendiente que la tienda ya no
+   * da por válida. Si la suscripción está en `pago_en_proceso` y no queda
+   * otra compra pendiente, la devuelve a `prueba_vencida` (nunca pagó) o a
+   * `vencida` (ya había pagado).
+   */
+  private async expirarPendiente(
+    usuario: UsuarioSuscripcion,
+    existente: Compra,
+    ahora: Date,
+  ): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const suscripcionRepo = manager.getRepository(Suscripcion);
+      const compraRepo = manager.getRepository(Compra);
+
+      const fila = await suscripcionRepo.findOne({
+        where: { usuarioId: usuario.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!fila) return;
+
+      const actual = await compraRepo.findOne({ where: { id: existente.id } });
+      if (!actual || actual.estado !== 'pendiente') return;
+      await compraRepo.update({ id: actual.id }, { estado: 'expirada' });
+
+      if (fila.estado !== 'pago_en_proceso') return;
+      const otras = await compraRepo.count({
+        where: { usuarioId: usuario.id, estado: 'pendiente' },
+      });
+      if (otras > 0) return;
+
+      const nuncaPago = fila.accesoHasta === null;
+      await suscripcionRepo.update(
+        { id: fila.id },
+        {
+          estado: nuncaPago ? 'prueba_vencida' : 'vencida',
+          motivo: nuncaPago ? 'prueba_terminada' : 'cancelada',
+          estadoDesde: ahora,
+        },
+      );
+    });
   }
 
   /**

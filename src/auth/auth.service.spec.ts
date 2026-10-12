@@ -146,6 +146,7 @@ function buildService(): { service: AuthService; mocks: Mocks } {
     configService as never,
     mocks.mailService as never,
     mocks.suscripcionesService as never,
+    { calcular: (id: string) => `ofuscada-${id}` } as never,
   );
 
   return { service, mocks };
@@ -527,6 +528,7 @@ describe('AuthService: campo opcional `suscripcion` en login, register y me', ()
 
     expect(res.suscripcion).toEqual(SNAPSHOT);
     expect(res.updated_at).toBe(usuario.updatedAt);
+    expect(res.cuenta_ofuscada).toBe(`ofuscada-${usuario.id}`);
     expect(mocks.suscripcionesService.snapshot).toHaveBeenCalledWith(usuario);
   });
 

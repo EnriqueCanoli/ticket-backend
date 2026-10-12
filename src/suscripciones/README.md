@@ -4,17 +4,19 @@
 
 Modelo de datos y lógica base de la suscripción mensual (prueba gratis de 14 días, después pago por
 Google Play). Es dueño exclusivo de las tablas `suscripciones`, `compras`, `pagos_historial` y
-`eventos_tienda`. El plan completo por etapas vive en `flujo_suscripcion.md` (raíz del repo, sin
-trackear en git); el contrato con el frontend está en `src/features/suscripcion/README.md` del repo
+`eventos_tienda`. El plan completo por etapas vive en `flujo_suscripcion.md` (raíz del repo, versionado
+en git); el contrato con el frontend está en `src/features/suscripcion/README.md` del repo
 `c:\dev\ticket` y en `src/shared/api/suscripcion.ts`.
 
-**Estado: etapa 4a de 6 (compra con verificador SIMULADO).** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
+**Estado: etapa 4b de 6 (compra con el verificador REAL de Google Play, el simulado se conserva).** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
 existentes), el estado efectivo, `SuscripcionesService.snapshot()` con el historial real,
 `GET /me/suscripcion` y el campo opcional `suscripcion` en auth (login, register y `GET /me`).
 Desde la etapa 3 el servidor **bloquea** (403 `SUSCRIPCION_REQUERIDA`) `POST /tickets` y
 `POST/PATCH/DELETE /productos` con la suscripción no activa. Desde la etapa 4a existen
 `POST /me/suscripcion/validar-compra` y `POST /me/suscripcion/restaurar`, validados por un verificador
-**simulado** (nunca llama a Google). **Todavía no hay** verificación real, acknowledge real ni RTDN.
+**simulado** (por defecto) o, con `VALIDACION_TIENDA=google`, por el **real** (etapa 4b: Google Play
+Developer API, acknowledge real, `cuenta_ofuscada` por HMAC y monto real). **Todavía no hay** RTDN
+(etapa 5): ver "Limitaciones conocidas hasta la etapa 5".
 
 ## 2. Estructura real
 
@@ -25,10 +27,13 @@ src/suscripciones/
 ├── suscripciones.service.ts       # crearPrueba(), snapshot(), estaBloqueada(), assertPuedeEscribir(), obtenerFila() (pública), historial() (privado), MAX_HISTORIAL
 ├── compra-suscripcion.service.ts  # CompraSuscripcionService: validarCompra(), restaurarCompras(), procesarCompra() (privado); MENSAJE_*
 ├── config-suscripcion.ts          # leerConfigSuscripcion() (pura, fail-fast), CONFIG_SUSCRIPCION
+├── cuenta-ofuscada.ts             # calcularCuentaOfuscada() (HMAC-SHA256 hex, pura), CuentaOfuscadaService (exportado)
 ├── dto/                           # ValidarCompraDto, RestaurarComprasDto, CompraRestaurarDto
 ├── verificadores/
 │   ├── verificador-tienda.interface.ts  # VerificadorTienda, ResultadoVerificacion, VERIFICADOR_TIENDA
-│   └── verificador-simulado.ts          # VerificadorSimulado (por prefijo del token), MONTO_SIMULADO, MONEDA_SIMULADA
+│   ├── verificador-simulado.ts          # VerificadorSimulado (por prefijo del token), MONTO_SIMULADO, MONEDA_SIMULADA
+│   ├── verificador-google.ts            # VerificadorGoogle (etapa 4b), MENSAJE_TIENDA_NO_DISPONIBLE, dineroANumero()
+│   └── google-play-api.ts               # GooglePlayApi (interfaz mockeable) y GooglePlayApiReal (@googleapis/androidpublisher)
 ├── bloqueo.ts                     # MENSAJE_SUSCRIPCION_REQUERIDA, ESTADOS_BLOQUEADOS, esEstadoBloqueado(): funciones puras
 ├── guards/
 │   └── suscripcion-activa.guard.ts  # SuscripcionActivaGuard (va siempre DESPUÉS de JwtAuthGuard)
@@ -56,7 +61,11 @@ Tests: `fechas.spec.ts`, `estado-efectivo.spec.ts`, `suscripciones.service.spec.
 `verificadores/verificador-simulado.spec.ts`, `compra-suscripcion.service.spec.ts` (unitarios) y los
 e2e `test/suscripcion-compra.e2e-spec.ts`, `test/suscripcion-compra-errores.e2e-spec.ts` y
 `test/suscripcion-restaurar.e2e-spec.ts` (tres archivos para no pasar de 10 llamadas por endpoint en
-cada suite: el throttle es de 10 por minuto).
+cada suite: el throttle es de 10 por minuto). Etapa 4b: `cuenta-ofuscada.spec.ts`,
+`verificadores/verificador-google.spec.ts` (con `GooglePlayApi` siempre mockeada: nunca hay red ni
+credenciales), y los e2e `test/suscripcion-cuenta-ofuscada.e2e-spec.ts` y
+`test/suscripcion-google-falso.e2e-spec.ts` (este último sobrescribe `VERIFICADOR_TIENDA` con un
+`VerificadorGoogle` sobre una API falsa).
 
 ## 2.1 Endpoint
 
@@ -112,12 +121,12 @@ Dónde se aplica: `@UseGuards(JwtAuthGuard, SuscripcionActivaGuard)` en `Tickets
 provider en cada módulo). El guard corre antes que `ParseUUIDPipe` y que el `ValidationPipe`: una cuenta
 bloqueada recibe 403 aunque el `:id` o el body sean inválidos (orden 403 → validación).
 
-## 2.3 Compra de la suscripción (etapa 4a, verificador simulado)
+## 2.3 Compra de la suscripción (etapa 4a simulado, etapa 4b real)
 
 Los dos endpoints llevan `JwtAuthGuard` y `@Throttle({ default: { limit: 10, ttl: 60000 } })`
 (10 por minuto cada uno). **Nunca** llevan `SuscripcionActivaGuard`: una cuenta bloqueada tiene que
 poder pagar. Respuestas: `200` con el `SuscripcionSnapshot`; `400` (DTO inválido,
-`PRODUCTO_INVALIDO` o `COMPRA_RECHAZADA`); `401`; `409` `TIENDA_EN_USO`; `429`. Los mensajes
+`PRODUCTO_INVALIDO` o `COMPRA_RECHAZADA`); `401`; `409` `TIENDA_EN_USO`; `429`; `503` `TIENDA_NO_DISPONIBLE` (solo con el verificador real). Los mensajes
 llevan el código al inicio (`MENSAJE_TIENDA_EN_USO`, `MENSAJE_PRODUCTO_INVALIDO`,
 `MENSAJE_COMPRA_RECHAZADA` en `compra-suscripcion.service.ts`).
 
@@ -154,10 +163,20 @@ Una configuración inválida hace fallar el arranque (patrón de `MailService`).
 cuenta como ausente.
 
 - `VALIDACION_TIENDA`: ausente fuera de producción = `simulada` (con un `Logger.warn`); ausente o
-  `simulada` con `NODE_ENV=production` = error; `google` = error hasta la etapa 4b; cualquier otro
-  valor = error con la lista de admitidos (`simulada`, `google`).
-- `PRODUCTO_SUSCRIPCION_ID`: ausente fuera de producción = `PENDIENTE` (el id provisional que envía el
-  frontend); ausente o `PENDIENTE` en producción = error.
+  `simulada` con `NODE_ENV=production` = error; cualquier otro valor = error con la lista de
+  admitidos (`simulada`, `google`). El modo por defecto es `simulada`; `google` solo se activa a mano.
+- `PRODUCTO_SUSCRIPCION_ID`: ausente fuera de producción = `PENDIENTE` (el id provisional); ausente o
+  `PENDIENTE` en producción o con `google` = error. El id real es `ticket_mensual`; el simulado del
+  backend necesita `PRODUCTO_SUSCRIPCION_ID=ticket_mensual` en su `.env` porque el frontend ya envía
+  ese id.
+- Con `VALIDACION_TIENDA=google` (en cualquier entorno) son obligatorias: `GOOGLE_SERVICE_ACCOUNT_JSON`
+  (el JSON de la cuenta de servicio en base64, en una sola línea; se decodifica y se exige
+  `client_email` y `private_key`), `PLAY_PACKAGE_NAME`, `SUSCRIPCION_HMAC_SECRETO` (32 caracteres o
+  más) y un `PRODUCTO_SUSCRIPCION_ID` distinto de `PENDIENTE`.
+- `SUSCRIPCION_HMAC_SECRETO`: obligatorio (32 o más) en producción y con `google`; en otro caso,
+  ausente = constante de desarrollo (`HMAC_SECRETO_DESARROLLO`) con un `Logger.warn`.
+- Los mensajes de error nunca incluyen el valor de la variable ni fragmentos del JSON.
+- El paquete `@googleapis/androidpublisher@42.2.0` (versión exacta) exige **Node >= 22**.
 
 ### Algoritmo (`CompraSuscripcionService.procesarCompra`)
 
@@ -166,13 +185,19 @@ cuenta como ausente.
 3. **Idempotencia:** busca la compra por (`tienda`, `purchase_token`): de otra cuenta, 409; propia y
    no `pendiente`, se devuelve el snapshot sin verificar ni abrir transacción; propia y `pendiente`,
    se vuelve a verificar (D8).
-4. `verificador.verificar(...)` **fuera** de la transacción: `rechazada` = 400; `cuentaOfuscada` no
-   nula y distinta de `usuario.id` = 409 (en la 4a se compara con `usuario.id` porque el frontend usa
-   `getMe().id` como `cuentaId`; en la 4b será el HMAC).
+4. `verificador.verificar(...)` **fuera** de la transacción (un `TIENDA_NO_DISPONIBLE` sale aquí sin
+   tocar la BD): `rechazada` = 400 (E12: si la compra propia estaba `pendiente`, antes pasa a `expirada`
+   y, si era lo que mantenía a la cuenta en `pago_en_proceso` y no queda otra pendiente, la cuenta
+   vuelve a `prueba_vencida`/`prueba_terminada` si nunca pagó (`acceso_hasta` NULL) o a
+   `vencida`/`cancelada` si ya había pagado, con `estado_desde` = ahora); `cuentaOfuscada` no nula y
+   distinta del HMAC de `usuario.id` = 409 (E8: nula = se acepta y se liga a quien la envía).
 5. Transacción con `SELECT ... FOR UPDATE` (`pessimistic_write`) sobre la fila de `suscripciones`;
    relee la compra dentro de la transacción y calcula el estado efectivo.
 6. **Carrera:** una violación `23505` del UNIQUE (`tienda`, `purchase_token`) se captura, se relee la
    compra fuera de la transacción y se responde 409 (de otra cuenta) o ok (propia).
+   Con `autoRenovacion = false` (cancelada con tiempo restante) queda `activa`, `proximo_cobro` NULL y
+   `renovacion_automatica = false`. Si `yaReconocida`, se guarda `reconocida_en = now()` sin llamar a
+   `reconocer`. Un monto o moneda `null` inserta 0 (el CHECK exige >= 0) con un `Logger.warn`.
 7. Tras el commit, si la compra quedó `confirmada` con `reconocida_en` NULL se llama a
    `verificador.reconocer` y se marca `reconocida_en = now()`. Si falla, se registra con
    `Logger.error` y NO se rompe la activación; se reintenta al reenviar el token.
@@ -201,7 +226,62 @@ cuenta como ausente.
   99.00 MXN (`MONTO_SIMULADO`, `MONEDA_SIMULADA`, marcados `// TEMPORAL: precio real en 4b`).
 - **D8:** un token propio `pendiente` que se reenvía se vuelve a verificar. **D9:** `restaurar`
   aplica las compras propias y solo responde 409 si ninguna es propia y al menos una es ajena.
-- El monto de 99.00 MXN es provisional: el precio real llega en la 4b (riesgo R-4).
+- El monto de 99.00 MXN es solo del verificador simulado. Con el real (E3) el monto es el total que
+  pagó el cliente (`orders.get` > `total`).
+
+## 2.4 Verificador real de Google Play (etapa 4b)
+
+`VerificadorGoogle` consulta `purchases.subscriptionsv2.get` a través de `GooglePlayApi` (interfaz con
+`obtenerSuscripcion`, `reconocer` y `obtenerPedido`; implementación `GooglePlayApiReal` con scope
+`https://www.googleapis.com/auth/androidpublisher` y timeout de 10 s por llamada). Usa el `lineItem`
+cuyo `productId` es el producto pedido (si no existe, `rechazada`). Nunca se registran el token, las
+credenciales ni la respuesta cruda (solo el código HTTP).
+
+| `subscriptionState` (`SUBSCRIPTION_STATE_*`) | Resultado |
+|---|---|
+| `ACTIVE` | `activa`, `autoRenovacion` = `autoRenewingPlan.autoRenewEnabled` |
+| `CANCELED` con `expiryTime` futuro | `activa`, `autoRenovacion = false` |
+| `CANCELED` con `expiryTime` pasado | `rechazada` |
+| `PENDING` | `pendiente` |
+| `IN_GRACE_PERIOD` y `ON_HOLD` | `rechazada` (E5) |
+| `PAUSED`, `EXPIRED`, `PENDING_PURCHASE_CANCELED`, `UNSPECIFIED` | `rechazada` |
+
+- **E5, cobro fallido:** en Play Console, gracia en 0 días (Google mantiene 1 día obligatorio) y
+  suspensión (account hold) activada. `IN_GRACE_PERIOD` y `ON_HOLD` nunca activan una cuenta (cuentan
+  como `rechazada` al validar o restaurar). La recuperación con "Pago recibido" llegará por RTDN en la
+  etapa 5.
+- **Campos:** `orderId` = `lineItem.latestSuccessfulOrderId` (`subscriptionsv2` no tiene
+  `latestOrderId`: ese campo solo existe en la API v1 antigua, así que no hay respaldo); `periodoFin`
+  = `lineItem.expiryTime` (E2: fechas de Google, no `sumarUnMesNegocio`, que queda solo para el
+  simulado); `periodoInicio` = `startTime`, que es el momento en que se concedió la suscripción (alta
+  original), no el inicio del período en curso; `cuentaOfuscada` =
+  `externalAccountIdentifiers.obfuscatedExternalAccountId` o `null`; `yaReconocida` =
+  `acknowledgementState === ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED`.
+- **Monto (E3):** `orders.get(orderId).total` (units + nanos con 2 decimales y su `currencyCode`);
+  si falla o no viene, `autoRenewingPlan.recurringPrice` con `Logger.warn`; si tampoco hay, `null`.
+- **Compras de prueba (E14):** una `testPurchase` se acepta y se registra en el log (usuario y
+  `orderId`, sin el token).
+- **Errores de Google:** `400`, `404` y `410` = `rechazada`. Red, timeout, `401`, `403`, `429` y
+  `5xx` = `503 TIENDA_NO_DISPONIBLE: no pudimos confirmar el pago con la tienda, intenta de nuevo`;
+  un error de red NUNCA se convierte en `rechazada`. El cliente (la app) trata el 503 como
+  "sigue confirmando".
+- **Acknowledge solo en el servidor (E6):** `reconocer` llama a `purchases.subscriptions.acknowledge`
+  (`packageName`, `subscriptionId` = producto, `token`). Si Google responde 400 o 409 se relee la
+  compra y, si ya figura reconocida, cuenta como éxito. La app NO debe reconocer (en Android su
+  `terminarTransaccion` no hace nada): reconocer desde el cliente rompería D2. Sin acknowledge Google
+  reembolsa a los 3 días.
+- **`cuenta_ofuscada` (HMAC):** `HMAC-SHA256(usuario.id, SUSCRIPCION_HMAC_SECRETO)` en hexadecimal (64
+  caracteres, el máximo de `obfuscatedAccountId`). Se calcula (no se guarda), se expone en `GET /me`
+  (no en login ni register) y es lo que la app pasa a Google al comprar. **El secreto NO se rota
+  nunca:** cambiarlo rompería la correspondencia con las compras ya hechas.
+
+### Limitaciones conocidas hasta la etapa 5
+
+- Sin RTDN: una cuenta `activa` con renovación no refleja cancelaciones, reembolsos ni cobros
+  fallidos hasta que se vuelva a validar (la fila no vence por fecha mientras renueve).
+- `IN_GRACE_PERIOD`/`ON_HOLD` solo se detectan al validar o restaurar, no al ocurrir.
+- `periodoInicio` de una renovación valida de nuevo es el `startTime` original (ver arriba).
+- Sin reconciliación periódica ni eventos de la tienda (`eventos_tienda` sigue sin uso).
 
 ## 3. Reglas de negocio
 
@@ -362,8 +442,8 @@ Pub/Sub), `FK_eventos_tienda_usuario_id` → `usuarios(id)` **SET NULL**,
   `POST/PATCH/DELETE /productos`. Sin `borrador_iniciado_en` ni ventana (descartados).
 - **Etapa 4a (hecha):** `validar-compra` y `restaurar` con el verificador simulado, `409
   TIENDA_EN_USO`, idempotencia, lock y `23505`. Servicio aparte (`CompraSuscripcionService`).
-- **Etapa 4b (pendiente):** `VerificadorGoogle` (Google Play Developer API), acknowledge real,
-  `cuenta_ofuscada` (HMAC, `SUSCRIPCION_HMAC_SECRETO`), precio e id de producto reales, monto real
-  del historial y retiro del tope `VALIDACION_TIENDA=google` que hoy lanza error.
+- **Etapa 4b (hecha):** `VerificadorGoogle` (Google Play Developer API), acknowledge real,
+  `cuenta_ofuscada` (HMAC, `SUSCRIPCION_HMAC_SECRETO`) en `GET /me`, monto real del historial y modo
+  `google` en la configuración. Pendiente del dueño: el precio definitivo y las pruebas con teléfono.
 - **Etapa 5:** RTDN de Pub/Sub (`eventos_tienda`).
 - **Etapa 6:** retiro del mock del frontend e integración final.

@@ -10,11 +10,18 @@ import {
   CONFIG_SUSCRIPCION,
   leerConfigSuscripcion,
 } from './config-suscripcion';
+import type {
+  ConfigSuscripcion,
+  CredencialesGoogle,
+} from './config-suscripcion';
+import { CuentaOfuscadaService } from './cuenta-ofuscada';
 import { SuscripcionesController } from './suscripciones.controller';
 import { SuscripcionActivaGuard } from './guards/suscripcion-activa.guard';
 import { SuscripcionesService } from './suscripciones.service';
 import { VERIFICADOR_TIENDA } from './verificadores/verificador-tienda.interface';
 import { VerificadorSimulado } from './verificadores/verificador-simulado';
+import { VerificadorGoogle } from './verificadores/verificador-google';
+import { GooglePlayApiReal } from './verificadores/google-play-api';
 
 /**
  * Expone GET /me/suscripcion (etapa 2) y los POST de compra
@@ -27,8 +34,9 @@ import { VerificadorSimulado } from './verificadores/verificador-simulado';
  * SuscripcionActivaGuard)`.
  *
  * `CONFIG_SUSCRIPCION` falla el arranque (fail-fast) con una configuración
- * inválida; `VERIFICADOR_TIENDA` es hoy solo el simulado (la rama `google`
- * llega en la etapa 4b).
+ * inválida; `VERIFICADOR_TIENDA` es el simulado o el real de Google Play según
+ * `VALIDACION_TIENDA` (etapa 4b). `CuentaOfuscadaService` (HMAC de
+ * `cuenta_ofuscada`) se exporta para `GET /me`.
  */
 @Module({
   imports: [
@@ -44,6 +52,7 @@ import { VerificadorSimulado } from './verificadores/verificador-simulado';
     SuscripcionesService,
     SuscripcionActivaGuard,
     CompraSuscripcionService,
+    CuentaOfuscadaService,
     {
       provide: CONFIG_SUSCRIPCION,
       inject: [ConfigService],
@@ -55,10 +64,22 @@ import { VerificadorSimulado } from './verificadores/verificador-simulado';
           PRODUCTO_SUSCRIPCION_ID: config.get<string>(
             'PRODUCTO_SUSCRIPCION_ID',
           ),
+          GOOGLE_SERVICE_ACCOUNT_JSON: config.get<string>(
+            'GOOGLE_SERVICE_ACCOUNT_JSON',
+          ),
+          PLAY_PACKAGE_NAME: config.get<string>('PLAY_PACKAGE_NAME'),
+          SUSCRIPCION_HMAC_SECRETO: config.get<string>(
+            'SUSCRIPCION_HMAC_SECRETO',
+          ),
         });
         if (!config.get<string>('VALIDACION_TIENDA')) {
           logger.warn(
             'VALIDACION_TIENDA no configurada: se usa el verificador simulado (solo desarrollo y pruebas)',
+          );
+        }
+        if (!config.get<string>('SUSCRIPCION_HMAC_SECRETO')) {
+          logger.warn(
+            'SUSCRIPCION_HMAC_SECRETO no configurada: se usa un secreto de desarrollo (solo desarrollo y pruebas)',
           );
         }
         return resultado;
@@ -67,10 +88,23 @@ import { VerificadorSimulado } from './verificadores/verificador-simulado';
     {
       provide: VERIFICADOR_TIENDA,
       inject: [CONFIG_SUSCRIPCION],
-      // La etapa 4b añadirá la rama 'google'.
-      useFactory: () => new VerificadorSimulado(),
+      useFactory: (config: ConfigSuscripcion) => {
+        if (config.validacionTienda === 'google') {
+          return new VerificadorGoogle(
+            new GooglePlayApiReal(
+              config.paqueteAndroid as string,
+              config.credencialesGoogle as CredencialesGoogle,
+            ),
+          );
+        }
+        return new VerificadorSimulado();
+      },
     },
   ],
-  exports: [SuscripcionesService, SuscripcionActivaGuard],
+  exports: [
+    SuscripcionesService,
+    SuscripcionActivaGuard,
+    CuentaOfuscadaService,
+  ],
 })
 export class SuscripcionesModule {}

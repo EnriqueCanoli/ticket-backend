@@ -30,6 +30,7 @@ describe('JwtStrategy.validate', () => {
       configService as never,
       {} as never,
       {} as never,
+      {} as never,
     );
     strategy = new JwtStrategy(configService as never, authService);
   });

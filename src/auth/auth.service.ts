@@ -14,6 +14,7 @@ import * as bcrypt from 'bcryptjs';
 import { Usuario } from '../usuarios/entities/usuario.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
+import { CuentaOfuscadaService } from '../suscripciones/cuenta-ofuscada';
 import { SuscripcionesService } from '../suscripciones/suscripciones.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -116,6 +117,7 @@ export class AuthService {
     private readonly configService: ConfigService,
     private readonly mailService: MailService,
     private readonly suscripcionesService: SuscripcionesService,
+    private readonly cuentaOfuscadaService: CuentaOfuscadaService,
   ) {
     this.accessTokenTtlSeconds = parseInt(
       this.configService.get<string>('ACCESS_TOKEN_TTL', '900'),
@@ -356,6 +358,8 @@ export class AuthService {
     return {
       ...this.toUserResponse(usuario),
       updated_at: usuario.updatedAt,
+      // Identificador que la app pasa a Google Play como obfuscatedAccountId.
+      cuenta_ofuscada: this.cuentaOfuscadaService.calcular(usuario.id),
       ...(suscripcion ? { suscripcion } : {}),
     };
   }
