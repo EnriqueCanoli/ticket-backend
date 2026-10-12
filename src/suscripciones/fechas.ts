@@ -66,3 +66,26 @@ export function periodoNegocio(fecha: Date): string {
   const local = enZonaNegocio(fecha);
   return `${local.getUTCFullYear()}-${dosDigitos(local.getUTCMonth() + 1)}`;
 }
+
+/**
+ * Mismo día y hora del mes siguiente en la zona de negocio; si ese día no
+ * existe, el último día del mes (31 de enero → 28 de febrero). Es el fin del
+ * mes pagado (D3 de la etapa 4a).
+ */
+export function sumarUnMesNegocio(fecha: Date): Date {
+  const local = enZonaNegocio(fecha);
+  const anio = local.getUTCFullYear();
+  const mes = local.getUTCMonth() + 1; // mes siguiente (puede ser 12 → enero)
+  const diasDelMesSiguiente = new Date(Date.UTC(anio, mes + 1, 0)).getUTCDate();
+  const dia = Math.min(local.getUTCDate(), diasDelMesSiguiente);
+  const resultadoLocal = Date.UTC(
+    anio,
+    mes,
+    dia,
+    local.getUTCHours(),
+    local.getUTCMinutes(),
+    local.getUTCSeconds(),
+    local.getUTCMilliseconds(),
+  );
+  return new Date(resultadoLocal - DESFASE_NEGOCIO_MS);
+}

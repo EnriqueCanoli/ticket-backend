@@ -8,24 +8,32 @@ Google Play). Es dueño exclusivo de las tablas `suscripciones`, `compras`, `pag
 trackear en git); el contrato con el frontend está en `src/features/suscripcion/README.md` del repo
 `c:\dev\ticket` y en `src/shared/api/suscripcion.ts`.
 
-**Estado: etapa 3 de 6.** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
+**Estado: etapa 4a de 6 (compra con verificador SIMULADO).** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
 existentes), el estado efectivo, `SuscripcionesService.snapshot()` con el historial real,
 `GET /me/suscripcion` y el campo opcional `suscripcion` en auth (login, register y `GET /me`).
 Desde la etapa 3 el servidor **bloquea** (403 `SUSCRIPCION_REQUERIDA`) `POST /tickets` y
-`POST/PATCH/DELETE /productos` con la suscripción no activa. **Todavía no hay** compras ni RTDN.
+`POST/PATCH/DELETE /productos` con la suscripción no activa. Desde la etapa 4a existen
+`POST /me/suscripcion/validar-compra` y `POST /me/suscripcion/restaurar`, validados por un verificador
+**simulado** (nunca llama a Google). **Todavía no hay** verificación real, acknowledge real ni RTDN.
 
 ## 2. Estructura real
 
 ```
 src/suscripciones/
 ├── suscripciones.module.ts        # forFeature de las 4 entidades; registra el controller; exporta SuscripcionesService y SuscripcionActivaGuard
-├── suscripciones.controller.ts    # GET /me/suscripcion
-├── suscripciones.service.ts       # crearPrueba(), snapshot(), estaBloqueada(), assertPuedeEscribir(), obtenerFila()/historial() (privados), MAX_HISTORIAL
+├── suscripciones.controller.ts    # GET /me/suscripcion, POST /me/suscripcion/validar-compra y /restaurar
+├── suscripciones.service.ts       # crearPrueba(), snapshot(), estaBloqueada(), assertPuedeEscribir(), obtenerFila() (pública), historial() (privado), MAX_HISTORIAL
+├── compra-suscripcion.service.ts  # CompraSuscripcionService: validarCompra(), restaurarCompras(), procesarCompra() (privado); MENSAJE_*
+├── config-suscripcion.ts          # leerConfigSuscripcion() (pura, fail-fast), CONFIG_SUSCRIPCION
+├── dto/                           # ValidarCompraDto, RestaurarComprasDto, CompraRestaurarDto
+├── verificadores/
+│   ├── verificador-tienda.interface.ts  # VerificadorTienda, ResultadoVerificacion, VERIFICADOR_TIENDA
+│   └── verificador-simulado.ts          # VerificadorSimulado (por prefijo del token), MONTO_SIMULADO, MONEDA_SIMULADA
 ├── bloqueo.ts                     # MENSAJE_SUSCRIPCION_REQUERIDA, ESTADOS_BLOQUEADOS, esEstadoBloqueado(): funciones puras
 ├── guards/
 │   └── suscripcion-activa.guard.ts  # SuscripcionActivaGuard (va siempre DESPUÉS de JwtAuthGuard)
 ├── estado-efectivo.ts             # estadoEfectivo(fila, ahora): función pura (tabla 1.3 del plan)
-├── fechas.ts                      # aIsoNegocio, finDePrueba, periodoNegocio, ZONA_NEGOCIO_OFFSET_MIN
+├── fechas.ts                      # aIsoNegocio, finDePrueba, periodoNegocio, sumarUnMesNegocio, ZONA_NEGOCIO_OFFSET_MIN
 ├── entities/
 │   ├── suscripcion.entity.ts
 │   ├── compra.entity.ts
@@ -44,7 +52,11 @@ y `@CurrentUser()` importándolos por archivo, igual que `ProductosController`. 
 Tests: `fechas.spec.ts`, `estado-efectivo.spec.ts`, `suscripciones.service.spec.ts`,
 `suscripciones.controller.spec.ts`, `bloqueo.spec.ts`, `guards/suscripcion-activa.guard.spec.ts`
 (unitarios, sin BD), `test/suscripcion-prueba.e2e-spec.ts`, `test/suscripcion-lectura.e2e-spec.ts` y
-`test/suscripcion-bloqueo.e2e-spec.ts` (Postgres real).
+`test/suscripcion-bloqueo.e2e-spec.ts` (Postgres real). Etapa 4a: `config-suscripcion.spec.ts`,
+`verificadores/verificador-simulado.spec.ts`, `compra-suscripcion.service.spec.ts` (unitarios) y los
+e2e `test/suscripcion-compra.e2e-spec.ts`, `test/suscripcion-compra-errores.e2e-spec.ts` y
+`test/suscripcion-restaurar.e2e-spec.ts` (tres archivos para no pasar de 10 llamadas por endpoint en
+cada suite: el throttle es de 10 por minuto).
 
 ## 2.1 Endpoint
 
@@ -99,6 +111,97 @@ Dónde se aplica: `@UseGuards(JwtAuthGuard, SuscripcionActivaGuard)` en `Tickets
 `TicketsModule` y `ProductosModule` importan `SuscripcionesModule` (en vez de declarar el guard como
 provider en cada módulo). El guard corre antes que `ParseUUIDPipe` y que el `ValidationPipe`: una cuenta
 bloqueada recibe 403 aunque el `:id` o el body sean inválidos (orden 403 → validación).
+
+## 2.3 Compra de la suscripción (etapa 4a, verificador simulado)
+
+Los dos endpoints llevan `JwtAuthGuard` y `@Throttle({ default: { limit: 10, ttl: 60000 } })`
+(10 por minuto cada uno). **Nunca** llevan `SuscripcionActivaGuard`: una cuenta bloqueada tiene que
+poder pagar. Respuestas: `200` con el `SuscripcionSnapshot`; `400` (DTO inválido,
+`PRODUCTO_INVALIDO` o `COMPRA_RECHAZADA`); `401`; `409` `TIENDA_EN_USO`; `429`. Los mensajes
+llevan el código al inicio (`MENSAJE_TIENDA_EN_USO`, `MENSAJE_PRODUCTO_INVALIDO`,
+`MENSAJE_COMPRA_RECHAZADA` en `compra-suscripcion.service.ts`).
+
+### `POST /me/suscripcion/validar-compra`
+
+Body (exactamente tres campos; cualquier otro da 400): `{ "tienda": "google_play", "producto_id":
+"<PRODUCTO_SUSCRIPCION_ID>", "token_compra": "..." }` (`tienda` solo `google_play`; `producto_id`
+1 a 100 caracteres; `token_compra` 1 a 2048).
+
+### `POST /me/suscripcion/restaurar`
+
+Body: `{ "tienda": "google_play", "compras": [{ "producto_id", "token_compra" }] }` (hasta 10
+compras; se admite el arreglo vacío). Cada compra se procesa como en `validar-compra`, con los
+tokens repetidos deduplicados (D9): una compra inválida (400) se ignora; si ninguna fue propia
+(aplicada, ya propia o ignorada por D2) y hubo al menos una de otra cuenta, `409`; en cualquier otro
+caso `200` con el snapshot final (un arreglo vacío o solo con compras inválidas devuelve el snapshot
+actual sin cambios).
+
+### Verificador simulado (`VALIDACION_TIENDA=simulada`)
+
+Decide por el prefijo del token, no llama a la tienda y su `reconocer` no hace nada. `orderId` =
+`SIM-` + los 24 primeros hex del SHA-256 del token (determinista).
+
+| Prefijo | Resultado |
+|---|---|
+| `mock-compra-` (incluye `mock-compra-a-medias-`) | `activa`, `periodoInicio` = ahora, `periodoFin` = ahora + 1 mes (zona de negocio), renovación sí, 99.00 MXN |
+| `mock-pendiente-` | `pendiente`, sin fechas, monto ni moneda, sin renovación |
+| `mock-tienda-en-uso-` | como `mock-compra-` pero con `cuentaOfuscada = 'cuenta-simulada-ajena'` (da 409) |
+| cualquier otro | `rechazada` (400 `COMPRA_RECHAZADA`) |
+
+### Configuración (fail-fast, `config-suscripcion.ts`)
+
+Una configuración inválida hace fallar el arranque (patrón de `MailService`). Una variable vacía
+cuenta como ausente.
+
+- `VALIDACION_TIENDA`: ausente fuera de producción = `simulada` (con un `Logger.warn`); ausente o
+  `simulada` con `NODE_ENV=production` = error; `google` = error hasta la etapa 4b; cualquier otro
+  valor = error con la lista de admitidos (`simulada`, `google`).
+- `PRODUCTO_SUSCRIPCION_ID`: ausente fuera de producción = `PENDIENTE` (el id provisional que envía el
+  frontend); ausente o `PENDIENTE` en producción = error.
+
+### Algoritmo (`CompraSuscripcionService.procesarCompra`)
+
+1. `producto_id` distinto de `PRODUCTO_SUSCRIPCION_ID`: 400 `PRODUCTO_INVALIDO`.
+2. `obtenerFila` repara la cuenta sin fila de suscripción.
+3. **Idempotencia:** busca la compra por (`tienda`, `purchase_token`): de otra cuenta, 409; propia y
+   no `pendiente`, se devuelve el snapshot sin verificar ni abrir transacción; propia y `pendiente`,
+   se vuelve a verificar (D8).
+4. `verificador.verificar(...)` **fuera** de la transacción: `rechazada` = 400; `cuentaOfuscada` no
+   nula y distinta de `usuario.id` = 409 (en la 4a se compara con `usuario.id` porque el frontend usa
+   `getMe().id` como `cuentaId`; en la 4b será el HMAC).
+5. Transacción con `SELECT ... FOR UPDATE` (`pessimistic_write`) sobre la fila de `suscripciones`;
+   relee la compra dentro de la transacción y calcula el estado efectivo.
+6. **Carrera:** una violación `23505` del UNIQUE (`tienda`, `purchase_token`) se captura, se relee la
+   compra fuera de la transacción y se responde 409 (de otra cuenta) o ok (propia).
+7. Tras el commit, si la compra quedó `confirmada` con `reconocida_en` NULL se llama a
+   `verificador.reconocer` y se marca `reconocida_en = now()`. Si falla, se registra con
+   `Logger.error` y NO se rompe la activación; se reintenta al reenviar el token.
+
+### Reglas del dueño del producto (4a)
+
+- **D1, pago pendiente (OXXO):** solo pasa a `pago_en_proceso` (bloquea) si la cuenta YA no tenía
+  días (estado efectivo `prueba_vencida`, `vencida` o `pago_en_proceso`). Con días (prueba vigente,
+  `activa` o `cancelada` vigente) NO cambia la suscripción: solo se guarda la compra `pendiente` y la
+  cuenta sigue con normalidad. Las compras pendientes no generan fila en `pagos_historial`. Al pasar
+  a `pago_en_proceso` se fija `tienda = google_play`, `renovacion_automatica = false`,
+  `proximo_cobro = NULL`, `motivo = NULL`, `acceso_hasta` sin cambios.
+- **D2, no se cobra dos veces un mes vigente:** si llega un token NUEVO que la tienda da como
+  `activa` mientras el estado efectivo es `activa` o `cancelada` (con `acceso_hasta` futuro), NO se
+  aplica: no se inserta en `compras` ni en `pagos_historial`, no se cambia la suscripción y no se
+  llama a `reconocer`; se registra un `Logger.warn` con el usuario y el `orderId` (nunca el token) y
+  se responde 200 con el snapshot actual. **En la 4b, al no hacer acknowledge, Google reembolsa
+  automáticamente esa compra a los 3 días.** Pagar durante la PRUEBA sí está permitido: la prueba no
+  cuenta como mes pagado; el mes empieza ese día y los días de prueba restantes se pierden
+  (`prueba_inicio` y `prueba_fin` no se tocan). Una compra propia `pendiente` que se confirma tarde
+  (D8) NO está sujeta a D2: es el mismo pago.
+- **D3, mes pagado y monto:** de `periodoInicio` (el momento del pago) al mismo día y hora del mes
+  siguiente en la zona de negocio (`sumarUnMesNegocio`: 31 de enero, 28 de febrero).
+  `acceso_hasta = proximo_cobro = periodoFin`. Una fila `pagado` en el historial por compra
+  confirmada, `INSERT ... ON CONFLICT ("tienda","external_id") DO NOTHING`, con monto PROVISIONAL de
+  99.00 MXN (`MONTO_SIMULADO`, `MONEDA_SIMULADA`, marcados `// TEMPORAL: precio real en 4b`).
+- **D8:** un token propio `pendiente` que se reenvía se vuelve a verificar. **D9:** `restaurar`
+  aplica las compras propias y solo responde 409 si ninguna es propia y al menos una es ajena.
+- El monto de 99.00 MXN es provisional: el precio real llega en la 4b (riesgo R-4).
 
 ## 3. Reglas de negocio
 
@@ -257,7 +360,10 @@ Pub/Sub), `FK_eventos_tienda_usuario_id` → `usuarios(id)` **SET NULL**,
   campo opcional `suscripcion` en login/register/`GET /me`.
 - **Etapa 3 (hecha):** `SuscripcionActivaGuard` y `403 SUSCRIPCION_REQUERIDA` en `POST /tickets` y
   `POST/PATCH/DELETE /productos`. Sin `borrador_iniciado_en` ni ventana (descartados).
-- **Etapa 4 (4a simulada, 4b real):** `validar-compra` y `restaurar`, `409 TIENDA_EN_USO`,
-  verificadores, acknowledge, `cuenta_ofuscada`.
+- **Etapa 4a (hecha):** `validar-compra` y `restaurar` con el verificador simulado, `409
+  TIENDA_EN_USO`, idempotencia, lock y `23505`. Servicio aparte (`CompraSuscripcionService`).
+- **Etapa 4b (pendiente):** `VerificadorGoogle` (Google Play Developer API), acknowledge real,
+  `cuenta_ofuscada` (HMAC, `SUSCRIPCION_HMAC_SECRETO`), precio e id de producto reales, monto real
+  del historial y retiro del tope `VALIDACION_TIENDA=google` que hoy lanza error.
 - **Etapa 5:** RTDN de Pub/Sub (`eventos_tienda`).
 - **Etapa 6:** retiro del mock del frontend e integración final.

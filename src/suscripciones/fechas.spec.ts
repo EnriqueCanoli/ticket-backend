@@ -1,4 +1,9 @@
-import { aIsoNegocio, finDePrueba, periodoNegocio } from './fechas';
+import {
+  aIsoNegocio,
+  finDePrueba,
+  periodoNegocio,
+  sumarUnMesNegocio,
+} from './fechas';
 
 describe('finDePrueba', () => {
   it('3 de marzo 09:12 (-06:00) → 16 de marzo 23:59:59-06:00', () => {
@@ -53,5 +58,24 @@ describe('periodoNegocio', () => {
 
   it('06:00Z del 1 de abril ya es abril en la zona de negocio', () => {
     expect(periodoNegocio(new Date('2026-04-01T06:00:00Z'))).toBe('2026-04');
+  });
+});
+
+describe('sumarUnMesNegocio', () => {
+  const casos: Array<[string, string]> = [
+    ['2026-03-14T14:05:00-06:00', '2026-04-14T14:05:00-06:00'],
+    ['2027-01-31T10:00:00-06:00', '2027-02-28T10:00:00-06:00'],
+    ['2028-01-31T10:00:00-06:00', '2028-02-29T10:00:00-06:00'],
+    ['2026-12-31T23:30:00-06:00', '2027-01-31T23:30:00-06:00'],
+    ['2026-05-31T23:59:59-06:00', '2026-06-30T23:59:59-06:00'],
+  ];
+
+  it.each(casos)('%s da %s', (entrada, esperado) => {
+    expect(aIsoNegocio(sumarUnMesNegocio(new Date(entrada)))).toBe(esperado);
+  });
+
+  it('usa la fecha de negocio y no la UTC (23:30 local ya es el día siguiente en UTC)', () => {
+    const r = sumarUnMesNegocio(new Date('2026-01-31T23:30:00-06:00'));
+    expect(aIsoNegocio(r)).toBe('2026-02-28T23:30:00-06:00');
   });
 });

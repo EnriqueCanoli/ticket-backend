@@ -766,6 +766,10 @@ Selección por `VALIDACION_TIENDA` con un proveedor de Nest (`useFactory`).
 
 #### Etapa 4a. Compra con verificador simulado
 
+**Estado: HECHA (2026-10-12).** Ver las filas "Etapa 4a" de la sección 8: el dueño del producto fijó las
+reglas D1 (pendiente solo bloquea si no quedaban días), D2 (no se cobra un mes pagado vigente) y D3 (mes
+pagado y monto provisional de 99.00 MXN) que mandan sobre el texto de abajo.
+
 **Objetivo.** `validar-compra` y `restaurar` completos en el servidor (deduplicación, `TIENDA_EN_USO`,
 historial, `pago_en_proceso`) con un verificador simulado que acepta tokens de prueba.
 
@@ -1107,3 +1111,20 @@ Fuera de las etapas actuales. La columna `tienda` conserva `varchar` con CHECK (
 | 2026-10-12 | Etapa 3: el guard corre antes que `ParseUUIDPipe` y que el `ValidationPipe`: una cuenta bloqueada recibe 403 aunque el `:id` o el body sean inválidos. Aceptado. |
 | 2026-10-12 | Etapa 3: `src/main.ts` solo llama a `bootstrap()` con `if (require.main === module)`. `test/body-limit.e2e-spec.ts` y el nuevo e2e importan `configureApp` de `main.ts`, y cada import abría un servidor real en el puerto 3000: dos suites en paralelo daban `EADDRINUSE`. Sin cambio de comportamiento con `nest start`. |
 | 2026-10-12 | Etapa 3: no hay migraciones, ni paquetes, ni variables de entorno nuevas (`.env.example` sin cambios). |
+| 2026-10-12 | Etapa 4a: D1 (dueño): una compra pendiente (OXXO, `mock-pendiente-`) pasa a `pago_en_proceso` (bloquea) solo si la cuenta YA no tenía días (estado efectivo `prueba_vencida`, `vencida` o `pago_en_proceso`). Con días (prueba vigente, `activa` o `cancelada` vigente) la suscripción no cambia: solo se guarda la compra `pendiente`. Cambia el plan, que pasaba siempre a `pago_en_proceso`. |
+| 2026-10-12 | Etapa 4a: D2 (dueño): con un MES PAGADO vigente (efectivo `activa` o `cancelada` con `acceso_hasta` futuro) no se vuelve a cobrar. Un token NUEVO que la tienda da como `activa` NO se aplica (ni `compras`, ni `pagos_historial`, ni cambios en `suscripciones`, ni `reconocer`), se registra un `Logger.warn` con el usuario y el `orderId` (nunca el token) y se responde 200 con el snapshot actual. En la 4b, al no hacer acknowledge, Google reembolsa automáticamente esa compra a los 3 días. Pagar durante la PRUEBA sí está permitido (la prueba no cuenta como mes pagado; los días restantes se pierden y `prueba_inicio`/`prueba_fin` no se tocan). Una compra propia `pendiente` que llega tarde (D8) no está sujeta a D2. En la app no debe aparecer ninguna opción de pagar en `activa` ni `cancelada_vigente` (verificado: ya no aparece). |
+| 2026-10-12 | Etapa 4a: D3 (dueño): el mes pagado va del momento del pago al mismo día y hora del mes siguiente en la zona de negocio (31 de enero, 28 de febrero: `sumarUnMesNegocio` en `fechas.ts`); `acceso_hasta` = `proximo_cobro` = fin del período. Una fila `pagado` en el historial por compra confirmada con monto PROVISIONAL de 99.00 MXN (`MONTO_SIMULADO`, `MONEDA_SIMULADA`, `// TEMPORAL: precio real en 4b`). Las compras pendientes no generan fila en el historial. |
+| 2026-10-12 | Etapa 4a: D4 (dueño, frontend): cada pago simulado genera un token NUEVO (`mock-compra-${cuentaId}-${Date.now()}` y `mock-pendiente-${cuentaId}-${Date.now()}`); `mock-tienda-en-uso-${cuentaId}` no cambia; el token "a medias" se genera una sola vez al elegir `a_medias` y `comprasDisponibles()` lo devuelve hasta `terminarTransaccion`. |
+| 2026-10-12 | Etapa 4a: D5: `VALIDACION_TIENDA` ausente o vacía = `simulada` fuera de producción (con `Logger.warn`) y error de arranque en producción; `simulada` en producción falla; `google` falla hasta la 4b; otro valor falla con la lista de admitidos. |
+| 2026-10-12 | Etapa 4a: D6: `PRODUCTO_SUSCRIPCION_ID` ausente = `PENDIENTE` fuera de producción; ausente o `PENDIENTE` en producción = error de arranque. |
+| 2026-10-12 | Etapa 4a: D7: no se instala `googleapis` ni ningún otro paquete; no hay migraciones (las tablas ya existían). |
+| 2026-10-12 | Etapa 4a: D8: un token propio en estado `pendiente` que se reenvía se vuelve a verificar. |
+| 2026-10-12 | Etapa 4a: D9: `restaurar` deduplica los tokens, ignora las compras inválidas (400) y aplica las propias; solo responde 409 si ninguna es propia y al menos una es ajena. Un arreglo vacío o solo con inválidas devuelve el snapshot actual. |
+| 2026-10-12 | Etapa 4a: D10: `@Throttle` de 10 por minuto en cada uno de los dos POST nuevos. |
+| 2026-10-12 | Etapa 4a: D11: pruebas manuales con curl solo contra la BD local, con cuentas `susc-4a-manual-%` creadas por SQL y borradas al terminar. |
+| 2026-10-12 | Etapa 4a (desviación): la lógica de compra vive en un servicio aparte, `CompraSuscripcionService`, y no en `SuscripcionesService.validarCompra` como decía el plan, para no añadir dependencias al constructor de `SuscripcionesService` (sus specs lo construyen con `new SuscripcionesService(repo, pagoRepo)`). |
+| 2026-10-12 | Etapa 4a (desviación): `SuscripcionesService.obtenerFila` pasa de privada a pública (sin renombrarla) para que `CompraSuscripcionService` repare la cuenta sin fila. |
+| 2026-10-12 | Etapa 4a (desviación): `cuentaOfuscada` del verificador se compara con `usuario.id` (el frontend usa `getMe().id` como `cuentaId`); en la 4b se sustituye por el HMAC (`cuenta_ofuscada`, sección 3.6). |
+| 2026-10-12 | Etapa 4a (desviación): el código de error de `409` es siempre `TIENDA_EN_USO` (la alternativa a del README del frontend); `PRODUCTO_INVALIDO` y `COMPRA_RECHAZADA` van como código al inicio del `message` de los `400`. |
+| 2026-10-12 | Etapa 4a (desviación): el e2e de `validar-compra` se divide en dos archivos (`suscripcion-compra.e2e-spec.ts` y `suscripcion-compra-errores.e2e-spec.ts`) además de `suscripcion-restaurar.e2e-spec.ts`: el endpoint tiene throttle de 10 por minuto y los casos pedidos suman más de 10 llamadas. Sin `POST /auth/register`; 3, 1 y 2 logins. |
+| 2026-10-12 | Etapa 4a: si una compra propia ya `confirmada` se reenvía y su `reconocida_en` sigue NULL (el acknowledge falló antes), se reintenta `reconocer` sin verificar de nuevo ni abrir transacción. |

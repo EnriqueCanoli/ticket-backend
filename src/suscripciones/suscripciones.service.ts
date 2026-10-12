@@ -110,7 +110,7 @@ export class SuscripcionesService {
    * crearla) la repara con `crearPrueba(usuario.id, usuario.createdAt)` y
    * vuelve a leer.
    */
-  private async obtenerFila(
+  async obtenerFila(
     usuario: Pick<Usuario, 'id' | 'createdAt'>,
   ): Promise<Suscripcion> {
     let fila = await this.buscarPorUsuario(usuario.id);
