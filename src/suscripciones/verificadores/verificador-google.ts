@@ -31,7 +31,7 @@ interface DineroGoogle {
 }
 
 /** Código HTTP de un error de gaxios/googleapis, o null si no fue una respuesta HTTP. */
-function estadoHttp(error: unknown): number | null {
+export function estadoHttp(error: unknown): number | null {
   if (typeof error !== 'object' || error === null) return null;
   const e = error as {
     status?: unknown;

@@ -21,7 +21,25 @@ import { SuscripcionesService } from './suscripciones.service';
 import { VERIFICADOR_TIENDA } from './verificadores/verificador-tienda.interface';
 import { VerificadorSimulado } from './verificadores/verificador-simulado';
 import { VerificadorGoogle } from './verificadores/verificador-google';
-import { GooglePlayApiReal } from './verificadores/google-play-api';
+import {
+  GOOGLE_PLAY_API,
+  GooglePlayApiReal,
+} from './verificadores/google-play-api';
+import type { GooglePlayApi } from './verificadores/google-play-api';
+import { auth as googleAuth } from '@googleapis/androidpublisher';
+import {
+  FUENTE_ESTADO_GOOGLE,
+  FuenteEstadoReal,
+  FuenteEstadoSimulada,
+} from './rtdn/fuente-estado-google';
+import {
+  VERIFICADOR_PUSH,
+  VerificadorPushDesactivado,
+  VerificadorPushOidc,
+} from './rtdn/pubsub-auth';
+import { ReconciliacionService } from './rtdn/reconciliacion.service';
+import { RtdnController } from './rtdn/rtdn.controller';
+import { RtdnService } from './rtdn/rtdn.service';
 
 /**
  * Expone GET /me/suscripcion (etapa 2) y los POST de compra
@@ -47,12 +65,14 @@ import { GooglePlayApiReal } from './verificadores/google-play-api';
       EventoTienda,
     ]),
   ],
-  controllers: [SuscripcionesController],
+  controllers: [SuscripcionesController, RtdnController],
   providers: [
     SuscripcionesService,
     SuscripcionActivaGuard,
     CompraSuscripcionService,
     CuentaOfuscadaService,
+    RtdnService,
+    ReconciliacionService,
     {
       provide: CONFIG_SUSCRIPCION,
       inject: [ConfigService],
@@ -71,6 +91,8 @@ import { GooglePlayApiReal } from './verificadores/google-play-api';
           SUSCRIPCION_HMAC_SECRETO: config.get<string>(
             'SUSCRIPCION_HMAC_SECRETO',
           ),
+          PUBSUB_PUSH_AUDIENCIA: config.get<string>('PUBSUB_PUSH_AUDIENCIA'),
+          PUBSUB_PUSH_EMAIL: config.get<string>('PUBSUB_PUSH_EMAIL'),
         });
         if (!config.get<string>('VALIDACION_TIENDA')) {
           logger.warn(
@@ -86,18 +108,56 @@ import { GooglePlayApiReal } from './verificadores/google-play-api';
       },
     },
     {
-      provide: VERIFICADOR_TIENDA,
+      // Solo en modo google; en simulada es null (nunca se llama a Google).
+      provide: GOOGLE_PLAY_API,
       inject: [CONFIG_SUSCRIPCION],
-      useFactory: (config: ConfigSuscripcion) => {
-        if (config.validacionTienda === 'google') {
-          return new VerificadorGoogle(
-            new GooglePlayApiReal(
+      useFactory: (config: ConfigSuscripcion): GooglePlayApi | null =>
+        config.validacionTienda === 'google'
+          ? new GooglePlayApiReal(
               config.paqueteAndroid as string,
               config.credencialesGoogle as CredencialesGoogle,
-            ),
+            )
+          : null,
+    },
+    {
+      provide: VERIFICADOR_TIENDA,
+      inject: [CONFIG_SUSCRIPCION, GOOGLE_PLAY_API],
+      useFactory: (config: ConfigSuscripcion, api: GooglePlayApi | null) =>
+        config.validacionTienda === 'google' && api
+          ? new VerificadorGoogle(api)
+          : new VerificadorSimulado(),
+    },
+    {
+      // Estado de la suscripción en la tienda para los avisos RTDN (etapa 5).
+      provide: FUENTE_ESTADO_GOOGLE,
+      inject: [CONFIG_SUSCRIPCION, GOOGLE_PLAY_API],
+      useFactory: (config: ConfigSuscripcion, api: GooglePlayApi | null) =>
+        config.validacionTienda === 'google' && api
+          ? new FuenteEstadoReal(api)
+          : new FuenteEstadoSimulada(),
+    },
+    {
+      // Verificación del token OIDC del push de Pub/Sub (etapa 5, F10/F12).
+      provide: VERIFICADOR_PUSH,
+      inject: [CONFIG_SUSCRIPCION],
+      useFactory: (config: ConfigSuscripcion) => {
+        const logger = new Logger('RtdnPush');
+        if (!config.rtdnVerificarOidc) {
+          logger.warn(
+            'Modo simulada: el endpoint RTDN NO verifica el token OIDC (solo desarrollo y pruebas con curl)',
+          );
+          return new VerificadorPushDesactivado();
+        }
+        if (config.pubsubAudiencia === null || config.pubsubEmail === null) {
+          logger.warn(
+            'PUBSUB_PUSH_AUDIENCIA o PUBSUB_PUSH_EMAIL no configuradas: el endpoint RTDN responderá 401 a todo',
           );
         }
-        return new VerificadorSimulado();
+        return new VerificadorPushOidc(
+          config.pubsubAudiencia,
+          config.pubsubEmail,
+          new googleAuth.OAuth2(),
+        );
       },
     },
   ],
@@ -105,6 +165,7 @@ import { GooglePlayApiReal } from './verificadores/google-play-api';
     SuscripcionesService,
     SuscripcionActivaGuard,
     CuentaOfuscadaService,
+    ReconciliacionService,
   ],
 })
 export class SuscripcionesModule {}

@@ -19,6 +19,11 @@ const ENV_GOOGLE = {
   ).toString('base64'),
 };
 
+const PUBSUB = {
+  PUBSUB_PUSH_AUDIENCIA: 'https://api.ejemplo.com/tienda/google/rtdn',
+  PUBSUB_PUSH_EMAIL: 'push@proyecto.iam.gserviceaccount.com',
+};
+
 describe('leerConfigSuscripcion', () => {
   it('fuera de producción y sin variables: simulada y PENDIENTE', () => {
     expect(leerConfigSuscripcion({})).toMatchObject({
@@ -109,6 +114,9 @@ describe('leerConfigSuscripcion', () => {
         paqueteAndroid: 'com.canales.ticket',
         credencialesGoogle: CREDENCIALES,
         hmacSecreto: SECRETO,
+        pubsubAudiencia: null,
+        pubsubEmail: null,
+        rtdnVerificarOidc: true,
       });
     });
 
@@ -181,6 +189,7 @@ describe('leerConfigSuscripcion', () => {
       const base = {
         NODE_ENV: 'production',
         ...ENV_GOOGLE,
+        ...PUBSUB,
       };
       expect(leerConfigSuscripcion(base).validacionTienda).toBe('google');
       expect(() =>
@@ -196,9 +205,67 @@ describe('leerConfigSuscripcion', () => {
         leerConfigSuscripcion({
           NODE_ENV: 'production',
           ...ENV_GOOGLE,
+          ...PUBSUB,
           PRODUCTO_SUSCRIPCION_ID: 'PENDIENTE',
         }),
       ).toThrow('PRODUCTO_SUSCRIPCION_ID');
+    });
+  });
+
+  describe('variables del push de Pub/Sub (etapa 5)', () => {
+    const PRODUCCION = {
+      ...ENV_GOOGLE,
+      NODE_ENV: 'production',
+    };
+
+    it('en producción son obligatorias y el error no incluye valores', () => {
+      expect(() => leerConfigSuscripcion(PRODUCCION)).toThrow(
+        'PUBSUB_PUSH_AUDIENCIA no configurada',
+      );
+      expect(() =>
+        leerConfigSuscripcion({
+          ...PRODUCCION,
+          PUBSUB_PUSH_AUDIENCIA: 'https://api.ejemplo.com/rtdn',
+        }),
+      ).toThrow('PUBSUB_PUSH_EMAIL no configurada');
+      try {
+        leerConfigSuscripcion({
+          ...PRODUCCION,
+          PUBSUB_PUSH_AUDIENCIA: 'https://api.ejemplo.com/rtdn',
+        });
+      } catch (error) {
+        expect((error as Error).message).not.toContain('api.ejemplo.com');
+      }
+    });
+
+    it('en producción con ambas: se leen y se verifica el OIDC', () => {
+      expect(
+        leerConfigSuscripcion({
+          ...PRODUCCION,
+          PUBSUB_PUSH_AUDIENCIA: 'aud',
+          PUBSUB_PUSH_EMAIL: 'push@x.iam.gserviceaccount.com',
+        }),
+      ).toMatchObject({
+        pubsubAudiencia: 'aud',
+        pubsubEmail: 'push@x.iam.gserviceaccount.com',
+        rtdnVerificarOidc: true,
+      });
+    });
+
+    it('en modo google fuera de producción son opcionales y se sigue verificando', () => {
+      expect(leerConfigSuscripcion(ENV_GOOGLE)).toMatchObject({
+        pubsubAudiencia: null,
+        pubsubEmail: null,
+        rtdnVerificarOidc: true,
+      });
+    });
+
+    it('en modo simulada no se verifica el OIDC', () => {
+      expect(leerConfigSuscripcion({})).toMatchObject({
+        pubsubAudiencia: null,
+        pubsubEmail: null,
+        rtdnVerificarOidc: false,
+      });
     });
   });
 });

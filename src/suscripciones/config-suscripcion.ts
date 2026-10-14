@@ -14,6 +14,16 @@ export interface ConfigSuscripcion {
   credencialesGoogle: CredencialesGoogle | null;
   /** Secreto del HMAC de `cuenta_ofuscada` (nunca se rota). */
   hmacSecreto: string;
+  /** `PUBSUB_PUSH_AUDIENCIA` (etapa 5); null si no se configuró. */
+  pubsubAudiencia: string | null;
+  /** `PUBSUB_PUSH_EMAIL`: cuenta de servicio que firma el push; null si no se configuró. */
+  pubsubEmail: string | null;
+  /**
+   * `true` si el endpoint RTDN verifica el token OIDC de Pub/Sub. Solo es
+   * `false` en modo `simulada` (que nunca se admite en producción), para
+   * probar con curl.
+   */
+  rtdnVerificarOidc: boolean;
 }
 
 export const CONFIG_SUSCRIPCION = Symbol('CONFIG_SUSCRIPCION');
@@ -60,6 +70,8 @@ export function leerConfigSuscripcion(env: {
   GOOGLE_SERVICE_ACCOUNT_JSON?: string;
   PLAY_PACKAGE_NAME?: string;
   SUSCRIPCION_HMAC_SECRETO?: string;
+  PUBSUB_PUSH_AUDIENCIA?: string;
+  PUBSUB_PUSH_EMAIL?: string;
 }): ConfigSuscripcion {
   const produccion = env.NODE_ENV === 'production';
   const modo = valor(env.VALIDACION_TIENDA);
@@ -67,6 +79,8 @@ export function leerConfigSuscripcion(env: {
   const paquete = valor(env.PLAY_PACKAGE_NAME);
   const secreto = valor(env.SUSCRIPCION_HMAC_SECRETO);
   const credencialesBase64 = valor(env.GOOGLE_SERVICE_ACCOUNT_JSON);
+  const pubsubAudiencia = valor(env.PUBSUB_PUSH_AUDIENCIA);
+  const pubsubEmail = valor(env.PUBSUB_PUSH_EMAIL);
 
   let validacionTienda: ModoValidacionTienda;
   if (modo === undefined) {
@@ -114,6 +128,20 @@ export function leerConfigSuscripcion(env: {
     );
   }
 
+  // Etapa 5 (F10): obligatorias en producción; en modo google fuera de
+  // producción son opcionales (si faltan, el endpoint RTDN responde 401 a todo
+  // y el módulo avisa al arrancar).
+  if (produccion && pubsubAudiencia === undefined) {
+    throw new Error(
+      'PUBSUB_PUSH_AUDIENCIA no configurada: requerida en producción',
+    );
+  }
+  if (produccion && pubsubEmail === undefined) {
+    throw new Error(
+      'PUBSUB_PUSH_EMAIL no configurada: requerida en producción',
+    );
+  }
+
   let credencialesGoogle: CredencialesGoogle | null = null;
   if (esGoogle) {
     if (paquete === undefined) {
@@ -130,6 +158,9 @@ export function leerConfigSuscripcion(env: {
     paqueteAndroid: paquete ?? null,
     credencialesGoogle,
     hmacSecreto: secreto ?? HMAC_SECRETO_DESARROLLO,
+    pubsubAudiencia: pubsubAudiencia ?? null,
+    pubsubEmail: pubsubEmail ?? null,
+    rtdnVerificarOidc: esGoogle,
   };
 }
 

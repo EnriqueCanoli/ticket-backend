@@ -16,6 +16,7 @@ import { RefreshToken } from './entities/refresh-token.entity';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
 import { CuentaOfuscadaService } from '../suscripciones/cuenta-ofuscada';
 import { SuscripcionesService } from '../suscripciones/suscripciones.service';
+import { ReconciliacionService } from '../suscripciones/rtdn/reconciliacion.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -118,6 +119,8 @@ export class AuthService {
     private readonly mailService: MailService,
     private readonly suscripcionesService: SuscripcionesService,
     private readonly cuentaOfuscadaService: CuentaOfuscadaService,
+    // Opcional en el tipo solo para los specs que construyen con `new`.
+    private readonly reconciliacion?: ReconciliacionService,
   ) {
     this.accessTokenTtlSeconds = parseInt(
       this.configService.get<string>('ACCESS_TOKEN_TTL', '900'),
@@ -373,7 +376,10 @@ export class AuthService {
     usuario: Usuario,
   ): Promise<SuscripcionSnapshot | undefined> {
     try {
-      return await this.suscripcionesService.snapshot(usuario);
+      const snapshot = await this.suscripcionesService.snapshot(usuario);
+      // Revisión de respaldo (F6): en segundo plano y nunca rompe la respuesta.
+      this.reconciliacion?.revisarSiHaceFalta(usuario.id, snapshot);
+      return snapshot;
     } catch (error) {
       this.logger.error(
         'No se pudo calcular el snapshot de suscripción',

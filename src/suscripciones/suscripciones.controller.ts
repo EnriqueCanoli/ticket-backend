@@ -16,6 +16,7 @@ import { RestaurarComprasDto } from './dto/restaurar-compras.dto';
 import { ValidarCompraDto } from './dto/validar-compra.dto';
 import type { SuscripcionSnapshot } from './interfaces/suscripcion-response.interface';
 import { SuscripcionesService } from './suscripciones.service';
+import { ReconciliacionService } from './rtdn/reconciliacion.service';
 
 /**
  * - GET /me/suscripcion: snapshot de la suscripción de la cuenta autenticada.
@@ -30,13 +31,19 @@ export class SuscripcionesController {
   constructor(
     private readonly suscripcionesService: SuscripcionesService,
     private readonly compraSuscripcionService: CompraSuscripcionService,
+    // Opcional en el tipo solo para que los specs puedan construir el
+    // controller con `new`; Nest siempre lo inyecta.
+    private readonly reconciliacion?: ReconciliacionService,
   ) {}
 
   @Get('me/suscripcion')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
-  obtener(@CurrentUser() usuario: Usuario): Promise<SuscripcionSnapshot> {
-    return this.suscripcionesService.snapshot(usuario);
+  async obtener(@CurrentUser() usuario: Usuario): Promise<SuscripcionSnapshot> {
+    const snapshot = await this.suscripcionesService.snapshot(usuario);
+    // Revisión de respaldo (F6): en segundo plano, no cambia esta respuesta.
+    this.reconciliacion?.revisarSiHaceFalta(usuario.id, snapshot);
+    return snapshot;
   }
 
   @Post('me/suscripcion/validar-compra')

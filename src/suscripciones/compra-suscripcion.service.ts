@@ -115,6 +115,27 @@ export class CompraSuscripcionService {
     return this.suscripcionesService.snapshot(usuario);
   }
 
+  /**
+   * Etapa 5 (F5): compra que llega por aviso RTDN sin haber pasado por la app.
+   * Aplica EXACTAMENTE las reglas de `validar-compra` (D1, D2, E8, E12, carrera
+   * por el UNIQUE y acknowledge en el servidor). Lanza BadRequest / Conflict
+   * como `validarCompra`; el llamador los traduce a un resultado del evento.
+   */
+  aplicarCompraDeTienda(
+    usuario: UsuarioSuscripcion,
+    productoId: string,
+    token: string,
+    ahora: Date = new Date(),
+  ): Promise<ResultadoCompra> {
+    return this.procesarCompra(
+      usuario,
+      'google_play',
+      productoId,
+      token,
+      ahora,
+    );
+  }
+
   private async procesarCompra(
     usuario: UsuarioSuscripcion,
     tienda: TiendaSuscripcion,
@@ -372,7 +393,7 @@ export class CompraSuscripcionService {
    * Acknowledge de una compra `confirmada` sin `reconocida_en`. Un fallo se
    * registra y NO rompe la activación (se reintenta al reenviar el token).
    */
-  private async reconocerSiHaceFalta(compra: Compra): Promise<void> {
+  async reconocerSiHaceFalta(compra: Compra): Promise<void> {
     if (compra.estado !== 'confirmada' || compra.reconocidaEn) return;
     try {
       await this.verificador.reconocer({

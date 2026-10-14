@@ -165,6 +165,9 @@ function build(
       paqueteAndroid: null,
       credencialesGoogle: null,
       hmacSecreto: SECRETO,
+      pubsubAudiencia: null,
+      pubsubEmail: null,
+      rtdnVerificarOidc: false,
     },
     new CuentaOfuscadaService({ hmacSecreto: SECRETO } as never),
   );

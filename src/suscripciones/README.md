@@ -8,15 +8,15 @@ Google Play). Es dueño exclusivo de las tablas `suscripciones`, `compras`, `pag
 en git); el contrato con el frontend está en `src/features/suscripcion/README.md` del repo
 `c:\dev\ticket` y en `src/shared/api/suscripcion.ts`.
 
-**Estado: etapa 4b de 6 (compra con el verificador REAL de Google Play, el simulado se conserva).** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
+**Estado: etapa 5 de 6 (RTDN de Google Play por Pub/Sub push; compra con el verificador REAL de Google Play, el simulado se conserva).** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
 existentes), el estado efectivo, `SuscripcionesService.snapshot()` con el historial real,
 `GET /me/suscripcion` y el campo opcional `suscripcion` en auth (login, register y `GET /me`).
 Desde la etapa 3 el servidor **bloquea** (403 `SUSCRIPCION_REQUERIDA`) `POST /tickets` y
 `POST/PATCH/DELETE /productos` con la suscripción no activa. Desde la etapa 4a existen
 `POST /me/suscripcion/validar-compra` y `POST /me/suscripcion/restaurar`, validados por un verificador
 **simulado** (por defecto) o, con `VALIDACION_TIENDA=google`, por el **real** (etapa 4b: Google Play
-Developer API, acknowledge real, `cuenta_ofuscada` por HMAC y monto real). **Todavía no hay** RTDN
-(etapa 5): ver "Limitaciones conocidas hasta la etapa 5".
+Developer API, acknowledge real, `cuenta_ofuscada` por HMAC y monto real). Desde la etapa 5 existe
+`POST /tienda/google/rtdn` (notificaciones RTDN de Google Play): ver la sección 2.5.
 
 ## 2. Estructura real
 
@@ -27,6 +27,14 @@ src/suscripciones/
 ├── suscripciones.service.ts       # crearPrueba(), snapshot(), estaBloqueada(), assertPuedeEscribir(), obtenerFila() (pública), historial() (privado), MAX_HISTORIAL
 ├── compra-suscripcion.service.ts  # CompraSuscripcionService: validarCompra(), restaurarCompras(), procesarCompra() (privado); MENSAJE_*
 ├── config-suscripcion.ts          # leerConfigSuscripcion() (pura, fail-fast), CONFIG_SUSCRIPCION
+├── rtdn/                          # Etapa 5 (ver 2.5)
+│   ├── rtdn.controller.ts         # POST /tienda/google/rtdn (sin JwtAuthGuard, @SkipThrottle)
+│   ├── rtdn.service.ts            # idempotencia, re-consulta a Google, localización de la compra, aplicación del estado
+│   ├── rtdn.types.ts              # SobrePubSub (interface), decodificarMensaje(), nombres de tipo, huellaToken()
+│   ├── transicion.ts              # transicionDesdeGoogle(): función PURA con la tabla de transiciones
+│   ├── pubsub-auth.ts             # VERIFICADOR_PUSH, VerificadorPushOidc, VerificadorPushDesactivado
+│   ├── fuente-estado-google.ts    # FUENTE_ESTADO_GOOGLE, FuenteEstadoReal, FuenteEstadoSimulada
+│   └── reconciliacion.service.ts  # ReconciliacionService: revisión de respaldo (F6)
 ├── cuenta-ofuscada.ts             # calcularCuentaOfuscada() (HMAC-SHA256 hex, pura), CuentaOfuscadaService (exportado)
 ├── dto/                           # ValidarCompraDto, RestaurarComprasDto, CompraRestaurarDto
 ├── verificadores/
@@ -65,7 +73,10 @@ cada suite: el throttle es de 10 por minuto). Etapa 4b: `cuenta-ofuscada.spec.ts
 `verificadores/verificador-google.spec.ts` (con `GooglePlayApi` siempre mockeada: nunca hay red ni
 credenciales), y los e2e `test/suscripcion-cuenta-ofuscada.e2e-spec.ts` y
 `test/suscripcion-google-falso.e2e-spec.ts` (este último sobrescribe `VERIFICADOR_TIENDA` con un
-`VerificadorGoogle` sobre una API falsa).
+`VerificadorGoogle` sobre una API falsa). Etapa 5: `rtdn/transicion.spec.ts`, `rtdn/pubsub-auth.spec.ts`,
+`rtdn/rtdn.types.spec.ts` (decodificación y `FuenteEstadoSimulada`), `rtdn/rtdn.service.spec.ts`,
+`rtdn/reconciliacion.service.spec.ts` y el e2e `test/suscripcion-rtdn.e2e-spec.ts` (sobrescribe
+`FUENTE_ESTADO_GOOGLE` y `VERIFICADOR_PUSH`; nunca se llama a Google).
 
 ## 2.1 Endpoint
 
@@ -248,8 +259,8 @@ credenciales ni la respuesta cruda (solo el código HTTP).
 
 - **E5, cobro fallido:** en Play Console, gracia en 0 días (Google mantiene 1 día obligatorio) y
   suspensión (account hold) activada. `IN_GRACE_PERIOD` y `ON_HOLD` nunca activan una cuenta (cuentan
-  como `rechazada` al validar o restaurar). La recuperación con "Pago recibido" llegará por RTDN en la
-  etapa 5.
+  como `rechazada` al validar o restaurar). La recuperación con "Pago recibido" llega por RTDN (etapa
+  5, sección 2.5).
 - **Campos:** `orderId` = `lineItem.latestSuccessfulOrderId` (`subscriptionsv2` no tiene
   `latestOrderId`: ese campo solo existe en la API v1 antigua, así que no hay respaldo); `periodoFin`
   = `lineItem.expiryTime` (E2: fechas de Google, no `sumarUnMesNegocio`, que queda solo para el
@@ -275,13 +286,171 @@ credenciales ni la respuesta cruda (solo el código HTTP).
   (no en login ni register) y es lo que la app pasa a Google al comprar. **El secreto NO se rota
   nunca:** cambiarlo rompería la correspondencia con las compras ya hechas.
 
-### Limitaciones conocidas hasta la etapa 5
+### Limitaciones conocidas (actualizadas en la etapa 5)
 
-- Sin RTDN: una cuenta `activa` con renovación no refleja cancelaciones, reembolsos ni cobros
-  fallidos hasta que se vuelva a validar (la fila no vence por fecha mientras renueve).
-- `IN_GRACE_PERIOD`/`ON_HOLD` solo se detectan al validar o restaurar, no al ocurrir.
-- `periodoInicio` de una renovación valida de nuevo es el `startTime` original (ver arriba).
-- Sin reconciliación periódica ni eventos de la tienda (`eventos_tienda` sigue sin uso).
+- Resueltas por la etapa 5: cancelaciones, reembolsos, cobros fallidos y renovaciones ya llegan por RTDN
+  (sección 2.5) y hay una revisión de respaldo (F6) si se pierde un aviso.
+- `periodoInicio` de una compra validada es el `startTime` original (ver arriba); las renovaciones por
+  RTDN usan `order.createTime` (respaldo `eventTimeMillis`) para `cobrado_en`.
+- La revisión de respaldo guarda la última revisión en memoria: se reinicia con el proceso y no se
+  comparte entre instancias.
+- Dos suscripciones a la vez (R-2) solo se detectan con `Logger.warn`; no se resuelve automáticamente.
+- Un reembolso sin "Revocar" en Play Console puede volver a cobrar el mes siguiente (ver 2.5).
+- Siguen pendientes: App Store, el precio legal definitivo (`$XXX.00`) y las pruebas con Google real.
+
+## 2.5 RTDN de Google Play por Pub/Sub push (etapa 5)
+
+`POST /tienda/google/rtdn`: lo llama Pub/Sub, no la app. Sin `JwtAuthGuard`, con `@SkipThrottle()` y
+`@HttpCode(200)`; respuesta vacía. El body se tipa con la interface `SobrePubSub` (no con un DTO) para que
+el `ValidationPipe` global (`forbidNonWhitelisted`) no rechace campos que Pub/Sub añada. El límite de
+body de 1 MB sigue vigente; el `ThrottlerGuard` global no aplica a esta ruta (`@SkipThrottle`).
+
+### Orden de las comprobaciones y códigos HTTP
+
+1. **OIDC** (`VERIFICADOR_PUSH`); si falla, **401 sin tocar la BD** (no se guarda ninguna fila).
+2. `messageId = message.messageId ?? message.message_id`; si falta o mide más de 100 caracteres, **400**.
+3. `RtdnService.procesar`: idempotencia, decodificación y aplicación.
+
+| Código | Cuándo |
+|---|---|
+| 200 | procesado, ignorado, duplicado, compra desconocida, mensaje inválido, de prueba, `token_invalido` |
+| 400 | sin `messageId` (o de más de 100 caracteres) |
+| 401 | el token OIDC falta, tiene mal formato o no es válido |
+| 503 | Google (o sus certificados) no disponible, o un error transitorio de BD (Pub/Sub reintenta) |
+| 500 | error inesperado (Pub/Sub reintenta; el evento queda en `error`) |
+
+Pub/Sub confirma la entrega con 102, 200, 201, 202 o 204; cualquier otro código hace que reintente.
+
+### Verificación OIDC (F10, F12, F13)
+
+`VerificadorPushOidc` (`rtdn/pubsub-auth.ts`): extrae el JWT con `^Bearer (.+)$`, llama a
+`verifyIdToken({ idToken, audience: PUBSUB_PUSH_AUDIENCIA })` (la librería valida firma, `exp` e `iss`
+= `https://accounts.google.com`) y exige `email === PUBSUB_PUSH_EMAIL` y `email_verified === true`. Todo lo
+demás es 401; si falla la red al obtener los certificados de Google, 503. Nunca se registra el header ni el
+token. Se usa `auth.OAuth2` exportado por `@googleapis/androidpublisher` (`google-auth-library` 11.2.0
+transitiva): no se instaló nada.
+
+- **Producción:** `PUBSUB_PUSH_AUDIENCIA` y `PUBSUB_PUSH_EMAIL` son obligatorias (fail-fast).
+- **Modo `google` fuera de producción:** opcionales; si faltan, aviso al arrancar y 401 a todo.
+- **Modo `simulada` (nunca en producción):** no se verifica el OIDC (aviso al arrancar) y el estado de
+  Google se simula (`FuenteEstadoSimulada`), para probar con `curl`.
+
+### Idempotencia y `eventos_tienda`
+
+`INSERT INTO eventos_tienda (tienda, message_id, tipo, payload) VALUES ('google_play',$1,$2,$3) ON CONFLICT
+(message_id) DO NOTHING RETURNING id`. Si el `message_id` ya existía: con `procesado_en` no nulo, 200 sin
+hacer nada; con `procesado_en` nulo, se vuelve a procesar (el procesamiento es idempotente). Al terminar
+se actualizan `procesado_en = now()`, `resultado`, `usuario_id`, `compra_id` y `error = null`. Un error
+transitorio deja `resultado = 'error'`, `error` con un texto SIN token y `procesado_en` nulo, y responde
+503 para que Pub/Sub reintente. `tipo`: `SUBSCRIPTION_<NOMBRE>`, `VOIDED_PURCHASE`, `TEST`,
+`ONE_TIME_PRODUCT`, `PENDING_REFUND_REVIEW` o `DESCONOCIDO`.
+
+- **F8:** en `payload` el `purchaseToken` (y `linkedPurchaseToken`, `expiredPurchaseToken`) se sustituye por
+  `sha256:<16 hex>`. Nunca se guarda el token ni el payload crudo; un mensaje no decodificable guarda
+  `{"invalido":true}`.
+- **F9:** `eventos_tienda` se conserva sin borrado (bitácora de auditoría; crece una fila por aviso).
+- Resultados: `aplicado`, `sin_cambios`, `ignorado`, `prueba`, `mensaje_invalido`, `paquete_ajeno`
+  (`packageName` distinto de `PLAY_PACKAGE_NAME`), `compra_desconocida`, `token_invalido` (Google
+  400/404/410), `rechazada` / `conflicto` (compra nueva que `validar-compra` habría rechazado),
+  `d2_ignorada`, `error`.
+
+### Procesamiento
+
+Se decodifica `message.data` (base64 a JSON). `testNotification` es `prueba` (F11);
+`oneTimeProductNotification`, `pendingRefundReviewNotification`, un `voidedPurchaseNotification` con
+`productType` distinto de 1 y los tipos sin uso (11 `PAUSE_SCHEDULE_CHANGED` y desconocidos) son
+`ignorado`. Para una suscripción **siempre se vuelve a consultar el estado** a Google
+(`FUENTE_ESTADO_GOOGLE`: `purchases.subscriptionsv2.get`); del aviso solo se usa el motivo (`REVOKED` o
+voided = reembolso). Así el orden de llegada de los avisos no importa. Un 400/404/410 es
+`token_invalido` (200); red, timeout, 401, 403, 429 o 5xx es 503.
+
+La compra se localiza por (`google_play`, `purchaseToken`):
+
+- **No existe (F5):** se busca al dueño en este orden: compra registrada con `linkedPurchaseToken`,
+  compra registrada con `outOfAppPurchaseContext.expiredPurchaseToken`, y usuario cuyo HMAC
+  (`CuentaOfuscadaService`) coincide con `obfuscatedExternalAccountId` o con
+  `expiredExternalAccountIdentifiers`. Con dueño se llama a
+  `CompraSuscripcionService.aplicarCompraDeTienda` (las mismas reglas de `validar-compra`: D1, D2, E8, E12,
+  carrera `23505` y acknowledge en el servidor); un 400 es `rechazada`, un 409 `conflicto`; una compra que D2
+  no aplica es `d2_ignorada` (y la compra vieja `linked` no se toca). Si se aplicó y vino
+  `linkedPurchaseToken`, la compra vieja pasa a `expirada` sin tocar la suscripción. Sin dueño:
+  `compra_desconocida` y nada más (también para reembolsos de tokens desconocidos).
+- **Existe y está `pendiente`:** se delega en `aplicarCompraDeTienda` (D8 / E12).
+- **Existe (confirmada, expirada o reembolsada):** se aplica la tabla siguiente.
+
+### Tabla de transiciones (`transicionDesdeGoogle`, función pura)
+
+Se aplica en una transacción con `lock pessimistic_write` sobre la fila de `suscripciones` (primero
+`suscripciones`, después `compras`). Las llamadas a Google (`orders.get`, acknowledge) van FUERA de la
+transacción. `estado_desde` solo cambia si cambia el estado; si nada cambia, `sin_cambios`.
+`otraCompraVigente` = otra compra confirmada del usuario con `periodo_fin > ahora` (F7).
+
+| Estado de Google (re-consultado) | compras | suscripciones | pagos_historial |
+|---|---|---|---|
+| `ACTIVE` (PURCHASED, RENEWED, RECOVERED, RESTARTED, DEFERRED, PRICE_*, ITEMS_CHANGED, CANCELLATION_SCHEDULED) | `confirmada`, `periodo_fin` = `expiryTime`, `order_id` = `latestSuccessfulOrderId` | `activa`, renovación = `autoRenewEnabled`, `acceso_hasta` = expiry, `proximo_cobro` = expiry si renueva (si no, null), tienda `google_play`, `motivo` null. Si la fila está en `vencida`/`reembolso`, solo se reactiva con un pedido NUEVO no registrado (F3) | si `latestSuccessfulOrderId` no está registrado: fila `pagado` (monto = total de `orders.get`, respaldo `recurringPrice`, si no 0 con warn; `cobrado_en` = `order.createTime`, respaldo `eventTimeMillis` o ahora; `periodo` = `periodoNegocio(cobrado_en)`), `ON CONFLICT DO NOTHING` |
+| `CANCELED` con expiry futuro (F4) | `confirmada`, `periodo_fin` = expiry | `cancelada`, renovación false, `proximo_cobro` null, `acceso_hasta` = expiry, `motivo` null (si `otraCompraVigente`, no se toca) | solo si trae un pedido nuevo no registrado (desviación respecto al plan, ver sección 8 de `flujo_suscripcion.md`) |
+| `ON_HOLD` o `IN_GRACE_PERIOD` (F1, F2) | sin cambio | si no hay `otraCompraVigente`: `vencida`, `cobro_fallido`, renovación false, `proximo_cobro` null, `acceso_hasta` sin cambio | fila `fallido` con `external_id` = `fallido-${compra.id}-${periodo}`, `periodo` y `cobrado_en` = `acceso_hasta` anterior (o ahora), monto = `recurringPrice` o 0. Se conserva aunque luego llegue `RECOVERED` |
+| `EXPIRED`, o `CANCELED` con expiry pasado | `expirada` | si no hay `otraCompraVigente` ni `replacementCancellation`: `vencida`, renovación false, `proximo_cobro` null, `acceso_hasta` = expiry; `motivo` = `reembolso` si ya lo era, `cobro_fallido` si `systemInitiatedCancellation` o si ya estaba en `vencida`/`cobro_fallido`, si no `cancelada` | — |
+| `PAUSED` (pausa desactivada) | sin cambio | si no hay `otraCompraVigente`: `vencida`/`cancelada` | — |
+| `PENDING` o `PENDING_PURCHASE_CANCELED` | se delega (D8 / E12) si la compra está `pendiente`; si no, `ignorado` | | |
+| `UNSPECIFIED` o sin `lineItem` del producto | — | — | `ignorado` |
+| **Reembolso** (`voidedPurchaseNotification` con `productType` 1, o `REVOKED`), con cualquier estado de Google | `reembolsada` | `vencida`/`reembolso`, renovación false, `proximo_cobro` null, aunque Google siga en `ACTIVE` (si hay `otraCompraVigente`, no se toca la cuenta) | el pago con `external_id` = `orderId` pasa a `reembolsado` |
+
+### Decisiones del dueño (F1 a F14)
+
+- **F1** `ON_HOLD` / `IN_GRACE_PERIOD` = `vencida`/`cobro_fallido`; la cuenta se bloquea en cuanto llega el aviso.
+- **F2** El cobro fallido se anota como `fallido`; si Google lo recupera, la fila `fallido` se conserva y se
+  añade `pagado`.
+- **F3** Cualquier reembolso bloquea SIEMPRE. Un pedido NUEVO pagado (otro `latestSuccessfulOrderId` no
+  registrado) con `ACTIVE` es un pago real y reactiva. Un aviso sin pedido nuevo nunca quita el motivo
+  `reembolso`. `refundType` 2 se registra y se trata igual. **El dueño debe elegir siempre "Reembolsar y
+  revocar" en Play Console:** un reembolso sin revocar deja la suscripción viva en Google y puede volver a
+  cobrar el mes siguiente (el pago nuevo reactivaría la cuenta).
+- **F4** Cancelar con días pagados: `cancelada` hasta `expiryTime`; `RESTARTED` la reactiva sin cobro nuevo.
+- **F5** Compras que llegan por aviso: ver "Procesamiento".
+- **F6** Revisión de respaldo (abajo).
+- **F7** Dos compras a la vez: los avisos negativos de una compra vieja no tocan la cuenta si otra compra
+  confirmada sigue vigente; si quedan dos activas, solo `Logger.warn` (riesgo R-2).
+- **F8** Tokens como `sha256:<16 hex>` en `payload`. **F9** `eventos_tienda` sin borrado.
+- **F10** OIDC y variables (arriba). **F11** `prueba` e `ignorado` con 200. **F12** Modo `simulada`.
+- **F13** Sin dependencias nuevas. **F14** Sin cambios de código en el frontend (solo su README).
+
+### Revisión de respaldo (F6)
+
+`ReconciliacionService.revisarSiHaceFalta`, solo en modo `google`. Se dispara cuando el cliente consulta
+`GET /me/suscripcion` o el campo `suscripcion` de auth (login, register, `GET /me`), y SOLO si el snapshot
+dice `activa` con renovación y `acceso_hasta + 1 hora < ahora`; máximo UNA vez cada 24 horas por usuario
+(un `Map` en memoria que se reinicia con el proceso). Va en segundo plano (sin `await`, con `catch` y log),
+no cambia la respuesta en curso, re-consulta la compra confirmada más reciente y aplica la misma tabla con
+tipo `RECONCILIACION`. Las cuentas al día nunca generan consultas a Google. No crea fila en
+`eventos_tienda`; solo log. Es un servicio aparte, llamado desde `SuscripcionesController` y
+`AuthService.snapshotSeguro`, porque `SuscripcionesService` se construye con `new` en sus specs (en esos dos
+constructores el servicio es un parámetro opcional en el tipo para no romper los specs; Nest siempre lo inyecta).
+
+### Configuración de Pub/Sub y Play Console (tareas manuales, no son código)
+
+1. Crear un tema de Pub/Sub y, en Play Console (Monetización > Configuración de monetización >
+   Notificaciones en tiempo real para desarrolladores), indicarlo y elegir todas las notificaciones de
+   suscripciones y compras anuladas. La cuenta `google-play-developer-notifications@system.gserviceaccount.com`
+   necesita el rol Publicador en el tema.
+2. Crear una cuenta de servicio para firmar el push (su correo es `PUBSUB_PUSH_EMAIL`) y una suscripción
+   **push** al tema con endpoint `https://<dominio-público>/tienda/google/rtdn`, con autenticación habilitada
+   para esa cuenta y como audiencia la URL del endpoint (es `PUBSUB_PUSH_AUDIENCIA`).
+3. Plazo de confirmación razonable (por ejemplo 30 s) y política de reintento con retroceso.
+4. Enviar la notificación de prueba desde Play Console y comprobar `resultado = 'prueba'` en
+   `eventos_tienda`.
+5. Play Console: gracia en 0 días (Google mantiene 1 día silencioso), suspensión (account hold) activada,
+   pausa desactivada; al reembolsar, elegir siempre "Reembolsar y revocar".
+
+### Probar en local (modo `simulada`, sin OIDC)
+
+Con `VALIDACION_TIENDA` vacía y fuera de producción: crear una compra con `validar-compra` (token
+`mock-compra-…`) y enviar `curl -X POST localhost:3000/tienda/google/rtdn -H "content-type: application/json" -d
+'{"message":{"data":"<base64>","messageId":"m5-1"},"subscription":"projects/x/subscriptions/y"}'` con el
+base64 de `{"version":"1.0","packageName":"com.canales.ticket","eventTimeMillis":"1760000000000",
+"subscriptionNotification":{"version":"1.0","notificationType":5,"purchaseToken":"mock-compra-…"}}`.
+Tipo 5 deja la cuenta en `vencida`/`cobro_fallido`; 1 la reactiva (pedido `SIM-…-R1`); 3 cancela; 13
+expira; 12 revoca. Repetir el `messageId` no cambia nada.
 
 ## 3. Reglas de negocio
 
@@ -404,7 +573,7 @@ Constraints: `PK_pagos_historial`, `UQ_pagos_historial_tienda_external_id` (`tie
 `IDX_pagos_historial_usuario_cobrado` (`usuario_id`, `cobrado_en` DESC). `periodo` se calcula con
 `periodoNegocio(cobrado_en)`.
 
-### `eventos_tienda` (bitácora de notificaciones, etapa 5)
+### `eventos_tienda` (bitácora de notificaciones RTDN, etapa 5)
 
 Columnas: `id`, `tienda` DEFAULT `'google_play'`, `message_id` varchar(100), `tipo` varchar(60)
 NULL, `payload` jsonb, `usuario_id` NULL, `compra_id` NULL, `recibido_en` DEFAULT `now()`,
@@ -445,5 +614,6 @@ Pub/Sub), `FK_eventos_tienda_usuario_id` → `usuarios(id)` **SET NULL**,
 - **Etapa 4b (hecha):** `VerificadorGoogle` (Google Play Developer API), acknowledge real,
   `cuenta_ofuscada` (HMAC, `SUSCRIPCION_HMAC_SECRETO`) en `GET /me`, monto real del historial y modo
   `google` en la configuración. Pendiente del dueño: el precio definitivo y las pruebas con teléfono.
-- **Etapa 5:** RTDN de Pub/Sub (`eventos_tienda`).
+- **Etapa 5 (hecha):** RTDN de Google Play por Pub/Sub push (`eventos_tienda`), OIDC, transiciones F1–F7 y
+  revisión de respaldo (F6). Pendiente del dueño: configurar Pub/Sub y Play Console y probar con Google real.
 - **Etapa 6:** retiro del mock del frontend e integración final.
