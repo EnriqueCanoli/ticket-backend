@@ -7,7 +7,7 @@
  * `aIsoNegocio` en `src/shared/utils/subscriptionDates.ts`). En SQL (backfill
  * y consultas) se usa la zona con nombre `America/Mexico_City`; ambos criterios
  * coinciden mientras no vuelva el horario de verano (riesgo R-7 de
- * flujo_suscripcion.md, ver src/suscripciones/README.md).
+ * docs/suscripcion/flujo_suscripcion.md, ver src/suscripciones/README.md).
  *
  * Un instante se "mueve" a la zona de negocio sumándole el desfase y se lee con
  * los getters UTC de `Date`.

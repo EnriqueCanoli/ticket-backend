@@ -6,9 +6,9 @@ import type {
   VerificadorTienda,
 } from './verificador-tienda.interface';
 
-// TEMPORAL: precio real en 4b
+// Solo modo simulado (desarrollo y tests); el monto real sale de Google (E3).
 export const MONTO_SIMULADO = 99;
-// TEMPORAL: precio real en 4b
+// Solo modo simulado (desarrollo y tests); el monto real sale de Google (E3).
 export const MONEDA_SIMULADA = 'MXN';
 
 /** Id de cuenta que el simulador asocia a `mock-tienda-en-uso-` (cuenta ajena). */

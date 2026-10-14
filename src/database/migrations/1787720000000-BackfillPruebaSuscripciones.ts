@@ -6,7 +6,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * el día de la migración, que cuenta como el día 1. `prueba_fin` es el día
  * de la migración + 13 días a las 23:59:59 en `America/Mexico_City`, el mismo
  * cálculo que `finDePrueba()` (src/suscripciones/fechas.ts) usa en los
- * registros nuevos (flujo_suscripcion.md, sección 3.8).
+ * registros nuevos (docs/suscripcion/flujo_suscripcion.md, sección 3.8).
  *
  * El `up` es idempotente (`NOT EXISTS`): se puede repetir sin duplicar filas.
  *

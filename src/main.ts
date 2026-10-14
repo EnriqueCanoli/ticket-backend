@@ -7,6 +7,7 @@ import {
 } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { leerTrustProxy } from './trust-proxy';
 
 // BE-05: límite explícito de tamaño de body. No hay que depender del default
 // implícito de body-parser (100kb) ni de que alguien lo cambie sin darse
@@ -104,6 +105,12 @@ export function configureApp(app: NestExpressApplication): void {
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   configureApp(app);
+  // Detrás de un proxy (Render: TRUST_PROXY=1) para que req.ip sea la del cliente real. Solo aquí,
+  // no en configureApp, para que los e2e no cambien.
+  const trustProxy = leerTrustProxy(process.env.TRUST_PROXY);
+  if (trustProxy !== null) {
+    app.set('trust proxy', trustProxy);
+  }
   await app.listen(process.env.PORT ?? 3000);
 }
 // Solo se levanta el servidor al ejecutar este archivo como entrada (`node dist/main`). Los tests

@@ -67,7 +67,7 @@ function tokenInexistente(): Error & { status: number } {
  * | otro / null (reconciliación)                       | ACTIVE con la fecha guardada            |
  *
  * Una compra no guardada solo existe si el token empieza por `mock-`; en otro
- * caso responde 404 (token inválido). Monto 99.00 MXN (TEMPORAL).
+ * caso responde 404 (token inválido). Monto 99.00 MXN: solo modo simulado (desarrollo y tests); el monto real sale de Google (E3).
  */
 export class FuenteEstadoSimulada implements FuenteEstadoGoogle {
   constructor(private readonly reloj: () => Date = () => new Date()) {}

@@ -2,7 +2,7 @@ import { estadoEfectivo } from './estado-efectivo';
 import type { Suscripcion } from './entities/suscripcion.entity';
 
 /**
- * Tabla de la sección 1.3 de flujo_suscripcion.md con fixtures del 3 de
+ * Tabla de la sección 1.3 de docs/suscripcion/flujo_suscripcion.md con fixtures del 3 de
  * marzo (prueba hasta el 16 de marzo 23:59:59-06:00).
  */
 

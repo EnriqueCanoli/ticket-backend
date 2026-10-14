@@ -47,7 +47,7 @@ export class SuscripcionesService {
 
   /**
    * Snapshot de la suscripción de la cuenta (contrato de
-   * flujo_suscripcion.md, sección 2.1; reglas de la 3.7). Si la cuenta no
+   * docs/suscripcion/flujo_suscripcion.md, sección 2.1; reglas de la 3.7). Si la cuenta no
    * tiene fila (carrera con el registro o error al crearla), la repara con
    * `crearPrueba(usuario.id, usuario.createdAt)` y vuelve a leer.
    * `historial` trae los últimos `MAX_HISTORIAL` pagos de la cuenta (más

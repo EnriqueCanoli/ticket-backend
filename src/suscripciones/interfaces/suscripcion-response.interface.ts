@@ -1,6 +1,6 @@
 /**
  * Forma de la respuesta HTTP de la suscripción (contrato con el frontend,
- * `src/shared/api/suscripcion.ts`; flujo_suscripcion.md, sección 2.1).
+ * `src/shared/api/suscripcion.ts`; docs/suscripcion/flujo_suscripcion.md, sección 2.1).
  * Separada de las entidades de BD. snake_case y fechas ISO 8601 con zona
  * `-06:00` sin milisegundos (ver `aIsoNegocio` en `../fechas.ts`).
  *

@@ -2,7 +2,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 
 /**
  * Crea las cuatro tablas de la suscripción mensual (ver
- * src/suscripciones/README.md y flujo_suscripcion.md, sección 3):
+ * src/suscripciones/README.md y docs/suscripcion/flujo_suscripcion.md, sección 3):
  * - `suscripciones`: una fila por cuenta (UNIQUE `usuario_id`) con el estado
  *   guardado, la prueba de 14 días y el acceso pagado.
  * - `compras`: una fila por suscripción de la tienda (UNIQUE por

@@ -4,11 +4,11 @@
 
 Modelo de datos y lógica base de la suscripción mensual (prueba gratis de 14 días, después pago por
 Google Play). Es dueño exclusivo de las tablas `suscripciones`, `compras`, `pagos_historial` y
-`eventos_tienda`. El plan completo por etapas vive en `flujo_suscripcion.md` (raíz del repo, versionado
+`eventos_tienda`. El plan completo por etapas vive en `docs/suscripcion/flujo_suscripcion.md` (histórico, versionado
 en git); el contrato con el frontend está en `src/features/suscripcion/README.md` del repo
 `c:\dev\ticket` y en `src/shared/api/suscripcion.ts`.
 
-**Estado: etapa 5 de 6 (RTDN de Google Play por Pub/Sub push; compra con el verificador REAL de Google Play, el simulado se conserva).** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
+**Estado: etapa 6 de 6, cierre para producción (RTDN de Google Play por Pub/Sub push; compra con el verificador REAL de Google Play, el modo simulado se conserva para desarrollo y tests).** Existen las tablas, las entidades, la prueba de 14 días (cuentas nuevas y
 existentes), el estado efectivo, `SuscripcionesService.snapshot()` con el historial real,
 `GET /me/suscripcion` y el campo opcional `suscripcion` en auth (login, register y `GET /me`).
 Desde la etapa 3 el servidor **bloquea** (403 `SUSCRIPCION_REQUERIDA`) `POST /tickets` y
@@ -388,7 +388,7 @@ transacción. `estado_desde` solo cambia si cambia el estado; si nada cambia, `s
 | Estado de Google (re-consultado) | compras | suscripciones | pagos_historial |
 |---|---|---|---|
 | `ACTIVE` (PURCHASED, RENEWED, RECOVERED, RESTARTED, DEFERRED, PRICE_*, ITEMS_CHANGED, CANCELLATION_SCHEDULED) | `confirmada`, `periodo_fin` = `expiryTime`, `order_id` = `latestSuccessfulOrderId` | `activa`, renovación = `autoRenewEnabled`, `acceso_hasta` = expiry, `proximo_cobro` = expiry si renueva (si no, null), tienda `google_play`, `motivo` null. Si la fila está en `vencida`/`reembolso`, solo se reactiva con un pedido NUEVO no registrado (F3) | si `latestSuccessfulOrderId` no está registrado: fila `pagado` (monto = total de `orders.get`, respaldo `recurringPrice`, si no 0 con warn; `cobrado_en` = `order.createTime`, respaldo `eventTimeMillis` o ahora; `periodo` = `periodoNegocio(cobrado_en)`), `ON CONFLICT DO NOTHING` |
-| `CANCELED` con expiry futuro (F4) | `confirmada`, `periodo_fin` = expiry | `cancelada`, renovación false, `proximo_cobro` null, `acceso_hasta` = expiry, `motivo` null (si `otraCompraVigente`, no se toca) | solo si trae un pedido nuevo no registrado (desviación respecto al plan, ver sección 8 de `flujo_suscripcion.md`) |
+| `CANCELED` con expiry futuro (F4) | `confirmada`, `periodo_fin` = expiry | `cancelada`, renovación false, `proximo_cobro` null, `acceso_hasta` = expiry, `motivo` null (si `otraCompraVigente`, no se toca) | solo si trae un pedido nuevo no registrado (desviación respecto al plan, ver sección 8 de `docs/suscripcion/flujo_suscripcion.md`) |
 | `ON_HOLD` o `IN_GRACE_PERIOD` (F1, F2) | sin cambio | si no hay `otraCompraVigente`: `vencida`, `cobro_fallido`, renovación false, `proximo_cobro` null, `acceso_hasta` sin cambio | fila `fallido` con `external_id` = `fallido-${compra.id}-${periodo}`, `periodo` y `cobrado_en` = `acceso_hasta` anterior (o ahora), monto = `recurringPrice` o 0. Se conserva aunque luego llegue `RECOVERED` |
 | `EXPIRED`, o `CANCELED` con expiry pasado | `expirada` | si no hay `otraCompraVigente` ni `replacementCancellation`: `vencida`, renovación false, `proximo_cobro` null, `acceso_hasta` = expiry; `motivo` = `reembolso` si ya lo era, `cobro_fallido` si `systemInitiatedCancellation` o si ya estaba en `vencida`/`cobro_fallido`, si no `cancelada` | — |
 | `PAUSED` (pausa desactivada) | sin cambio | si no hay `otraCompraVigente`: `vencida`/`cancelada` | — |
@@ -616,4 +616,70 @@ Pub/Sub), `FK_eventos_tienda_usuario_id` → `usuarios(id)` **SET NULL**,
   `google` en la configuración. Pendiente del dueño: el precio definitivo y las pruebas con teléfono.
 - **Etapa 5 (hecha):** RTDN de Google Play por Pub/Sub push (`eventos_tienda`), OIDC, transiciones F1–F7 y
   revisión de respaldo (F6). Pendiente del dueño: configurar Pub/Sub y Play Console y probar con Google real.
-- **Etapa 6:** retiro del mock del frontend e integración final.
+- **Etapa 6 (hecha, 2026-10-14):** retiro del mock del frontend y cierre para producción. Backend: el modo
+  simulado (`VerificadorSimulado`, `FuenteEstadoSimulada`, `VerificadorPushDesactivado` y los valores por
+  defecto de desarrollo) se conserva solo para desarrollo y tests (ya falla al arrancar en producción);
+  `test/setup-e2e.ts` fuerza `VALIDACION_TIENDA=simulada` para que los e2e nunca usen Google real;
+  variable `TRUST_PROXY` (`src/trust-proxy.ts`, aplicada en `bootstrap()`); `.env.example` documenta
+  `NODE_ENV`, `PORT`, `DB_SSL` y `TRUST_PROXY`. Checklist de despliegue en la sección 7.
+
+## 7. Despliegue a producción (Render + Neon)
+
+Backend en Render, base de datos en Neon. Solo existe un usuario real (el dueño); recibirá 14 días de
+prueba desde el día en que se apliquen las migraciones. El build y la subida a Google Play los hace el
+dueño (el frontend necesita `EXPO_PUBLIC_API_URL=https://<servicio>.onrender.com` en EAS antes del build).
+
+### Variables de entorno de Render
+
+| Variable | Valor |
+|---|---|
+| `NODE_ENV` | `production` (activa los chequeos fail-fast de correo, suscripción y Pub/Sub). |
+| `VALIDACION_TIENDA` | `google` (`simulada` o vacía en producción hace fallar el arranque). |
+| `PRODUCTO_SUSCRIPCION_ID` | `ticket_mensual`. |
+| `PLAY_PACKAGE_NAME` | `com.canales.ticket`. |
+| `SUSCRIPCION_HMAC_SECRETO` | 32 caracteres o más, generado UNA vez y **nunca rotado** (cambiarlo rompe la correspondencia con las compras ya hechas). |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | JSON de la cuenta de servicio de Google, en base64 y en una sola línea. |
+| `PUBSUB_PUSH_AUDIENCIA` | Audiencia del token OIDC del push (la URL del endpoint RTDN). |
+| `PUBSUB_PUSH_EMAIL` | Correo de la cuenta de servicio que firma el push. |
+| `TRUST_PROXY` | `1` (Render pone un proxy delante; así `req.ip` y el throttle usan la IP real). |
+| `DB_SSL` | `true` (Neon exige TLS). |
+| `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME` | Los de Neon. |
+| `JWT_SECRET` | Secreto largo y propio de producción. |
+| `BREVO_API_KEY`, `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME` | Correo de recuperación de contraseña. |
+
+`PORT` lo inyecta Render. No se versionan valores reales en ningún archivo.
+
+### Migraciones
+
+`ts-node` es dependencia de desarrollo, así que en producción se compila y se ejecuta la migración sobre
+`dist`:
+
+```
+npm run build
+npx typeorm migration:run -d dist/database/data-source.js
+```
+
+1. **Antes**, crear un respaldo de Neon (branch o snapshot).
+2. El único usuario existente recibe 14 días de prueba desde la fecha de la migración (ese día cuenta como
+   el día 1; ver la sección 3).
+
+### Pub/Sub y Play Console
+
+1. Tema y suscripción push de Pub/Sub apuntando a `https://<servicio>.onrender.com/tienda/google/rtdn`,
+   con el correo de la cuenta de servicio y la audiencia que se pusieron en `PUBSUB_PUSH_EMAIL` y
+   `PUBSUB_PUSH_AUDIENCIA` (detalle en la sección 2.5, "Configuración de Pub/Sub y Play Console").
+2. Play Console: producto `ticket_mensual` con plan base `mensual` (renovación automática mensual, MXN, sin
+   oferta de prueba gratis), período de gracia en 0 días, suspensión (account hold) activada, pausa
+   desactivada, y las cuentas de prueba como license testers.
+3. **Riesgo:** en el plan gratuito de Render el servicio se duerme tras un rato sin tráfico; el primer aviso de
+   Pub/Sub puede tardar en despertarlo. Pub/Sub reintenta, y la revisión de respaldo (F6) cubre un aviso
+   perdido, pero para producción se recomienda un plan sin suspensión.
+
+### Orden recomendado
+
+1. Desplegar el backend en Render (con las variables de arriba).
+2. Migrar (respaldo de Neon antes).
+3. Configurar Pub/Sub y Play Console.
+4. Build del dueño con `EXPO_PUBLIC_API_URL` apuntando a Render.
+5. Pruebas en el teléfono (checklist de la sección j del README de suscripción del frontend).
+6. Merge a `main`.

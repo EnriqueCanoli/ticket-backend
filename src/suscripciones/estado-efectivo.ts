@@ -20,7 +20,7 @@ function yaPaso(fecha: Date | null, ahora: Date): boolean {
 }
 
 /**
- * Estado efectivo de la suscripción (flujo_suscripcion.md, sección 1.3): el
+ * Estado efectivo de la suscripción (docs/suscripcion/flujo_suscripcion.md, sección 1.3): el
  * estado guardado ajustado por el paso del tiempo. No hay proceso que
  * actualice filas por fecha, así que se deriva en cada lectura y en cada
  * decisión de bloqueo. Función pura. Nunca devuelve `gracia`.
